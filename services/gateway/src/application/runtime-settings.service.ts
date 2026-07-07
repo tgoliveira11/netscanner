@@ -37,7 +37,14 @@ export function createRuntimeSettings(c: Container, configPath: string): Runtime
       }
       saveEnvFile(configPath, persist);
 
-      c.snmp?.setOptions({ enabled: values.SNMP_ENABLED, community: values.SNMP_COMMUNITY });
+      c.snmp?.setOptions({
+        enabled: values.SNMP_ENABLED,
+        community: values.SNMP_COMMUNITIES ?? values.SNMP_COMMUNITY,
+      });
+      if (applied.includes('FINGERBANK_API_KEY')) {
+        const key = values.FINGERBANK_API_KEY?.trim();
+        if (key && c.fingerbank) c.fingerbank.setApiKey(key);
+      }
       c.backgroundWorker.reconfigure();
 
       return { restartRequired, applied };

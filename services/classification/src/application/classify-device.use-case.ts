@@ -72,6 +72,7 @@ export class ClassifyDeviceUseCase {
       deviceType: outcome.deviceType,
       isGateway: input.gatewayIp != null && input.ip === input.gatewayIp,
       authoritative: (input.signals['connectionAuthoritative'] as ConnectionType | undefined) ?? null,
+      authoritativeBasis: readStr(input.signals, 'connectionAuthoritativeBasis'),
     });
 
     const reasons = osResolved.extraReason
@@ -103,4 +104,9 @@ export class ClassifyDeviceUseCase {
     }
     return scanVendor;
   }
+}
+
+function readStr(signals: Record<string, unknown>, key: string): string | null {
+  const v = signals[key];
+  return typeof v === 'string' && v ? v : null;
 }

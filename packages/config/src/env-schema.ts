@@ -23,6 +23,46 @@ export const EnvSchema = z.object({
   LLDP_PASSIVE_ENABLED: z.coerce.boolean().default(true),
   SNMP_ENABLED: z.coerce.boolean().default(true),
   SNMP_COMMUNITY: z.string().default('public'),
+  /** Comma-separated communities tried in order (falls back to SNMP_COMMUNITY). */
+  SNMP_COMMUNITIES: z.string().optional(),
+  /** Managed switch/AP for BRIDGE-MIB wired/WiFi (SNMP v2c). */
+  SNMP_SWITCH_HOST: z.string().optional(),
+  /** Bridge port numbers treated as WiFi/radio uplinks (comma-separated). */
+  SNMP_WIFI_PORTS: z.string().default(''),
+  PASSIVE_DNS_ENABLED: z.coerce.boolean().default(true),
+  PASSIVE_IGMP_ENABLED: z.coerce.boolean().default(true),
+  PASSIVE_DHCPV6_ENABLED: z.coerce.boolean().default(true),
+  /** Continuous tcpdump LLDP stream vs periodic burst capture. */
+  LLDP_STREAM_ENABLED: z.coerce.boolean().default(true),
+  /** Extra subnets to scan (comma-separated CIDRs). Local interfaces are always included. */
+  SCAN_CIDRS: z.string().default(''),
+  ADAPTIVE_SCAN_ENABLED: z.coerce.boolean().default(true),
+  MASSCAN_ENABLED: z.coerce.boolean().default(false),
+  MASSCAN_RATE: z.coerce.number().default(1000),
+  /** Gateway SNMP for ipNetToMedia (DHCP-like MAC↔IP without pfSense). */
+  ROUTER_SNMP_HOST: z.string().optional(),
+  FRITZBOX_URL: z.string().optional(),
+  FRITZBOX_USER: z.string().default(''),
+  FRITZBOX_PASSWORD: z.string().optional(),
+  SNMP_V3_USER: z.string().optional(),
+  SNMP_V3_AUTH_PASS: z.string().optional(),
+  SNMP_V3_PRIV_PASS: z.string().optional(),
+  SNMP_V3_AUTH_PROTO: z.string().default('SHA'),
+  SNMP_V3_PRIV_PROTO: z.string().default('AES'),
+  SNMP_V3_SEC_LEVEL: z.enum(['noAuthNoPriv', 'authNoPriv', 'authPriv']).default('authPriv'),
+  UNIFI_URL: z.string().optional(),
+  UNIFI_API_KEY: z.string().optional(),
+  UNIFI_SITE: z.string().default('default'),
+  OMADA_URL: z.string().optional(),
+  OMADA_CLIENT_ID: z.string().optional(),
+  OMADA_CLIENT_SECRET: z.string().optional(),
+  OMADA_SITE_ID: z.string().optional(),
+  ROUTER_SCRAPE_URL: z.string().optional(),
+  ROUTER_SCRAPE_KIND: z.enum(['openwrt', 'compal']).optional(),
+  ROUTER_SCRAPE_USER: z.string().optional(),
+  ROUTER_SCRAPE_PASSWORD: z.string().optional(),
+  MAC_DNS_CACHE_ENABLED: z.coerce.boolean().default(true),
+  PROTOCOL_PROBE_ENABLED: z.coerce.boolean().default(true),
   AGENT_CONTROL_TOKEN: z.string().optional(),
 });
 

@@ -28,7 +28,17 @@ export function mergeFingerprints(ip: string, parts: HostFingerprint[]): HostFin
     vendorFromScan: parts.map((p) => p.vendorFromScan).find(Boolean) ?? null,
     hostname: parts.map((p) => p.hostname).find(Boolean) ?? null,
     source: parts.map((p) => p.source).join('+'),
+    signals: mergeSignalMaps(parts.map((p) => p.signals)),
   };
+}
+
+function mergeSignalMaps(maps: (Record<string, unknown> | undefined)[]): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const m of maps) {
+    if (!m) continue;
+    Object.assign(out, m);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function score(s: ServiceInfo): number {
