@@ -10,12 +10,23 @@ export interface SnmpResult {
  * Best-effort SNMP v2c sysDescr/sysName via snmpget when installed on the host.
  */
 export class SnmpEnricher {
+  private community: string;
+  private enabled: boolean;
+
   constructor(
     private readonly runner: ICommandRunner,
     private readonly logger: Logger,
-    private readonly community: string,
-    private readonly enabled: boolean,
-  ) {}
+    community: string,
+    enabled: boolean,
+  ) {
+    this.community = community;
+    this.enabled = enabled;
+  }
+
+  setOptions(opts: { enabled?: boolean; community?: string }): void {
+    if (opts.enabled !== undefined) this.enabled = opts.enabled;
+    if (opts.community !== undefined) this.community = opts.community;
+  }
 
   async query(ip: string): Promise<SnmpResult | null> {
     if (!this.enabled) return null;

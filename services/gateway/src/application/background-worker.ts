@@ -80,6 +80,12 @@ export class BackgroundWorker {
     this.passiveUnsub = null;
   }
 
+  /** Re-read interval flags from live config and restart timers. */
+  reconfigure(): void {
+    this.stop();
+    this.start();
+  }
+
   private async onPassiveSignal(ip: string): Promise<void> {
     if (ip.startsWith('lldp:')) return;
     const device = await this.deps.repo.findByIp(ip);
