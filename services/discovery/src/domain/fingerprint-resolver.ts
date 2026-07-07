@@ -3,7 +3,9 @@ export interface FingerprintQuery {
   mac: string | null;
   dhcpFingerprint?: string | null;
   dhcpVendor?: string | null;
+  dhcpv6Fingerprint?: string | null;
   hostname?: string | null;
+  userAgents?: string[];
 }
 
 /** A resolved device identity from an external database (Fingerbank). */

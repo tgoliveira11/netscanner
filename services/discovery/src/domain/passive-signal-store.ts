@@ -33,6 +33,19 @@ export function mergePassiveSignals(
       out[key] = merged;
       continue;
     }
+    if (key === 'igmpGroups' && Array.isArray(out[key]) && Array.isArray(value)) {
+      out[key] = [...new Set([...(out[key] as string[]), ...(value as string[])])];
+      continue;
+    }
+    if (key === 'dnsRecentQueries' && Array.isArray(out[key]) && Array.isArray(value)) {
+      const merged = [...new Set([...(out[key] as string[]), ...(value as string[])])];
+      out[key] = merged.slice(-30);
+      continue;
+    }
+    if (key === 'mdnsTxt' && out[key] && typeof out[key] === 'object' && typeof value === 'object') {
+      out[key] = { ...(out[key] as Record<string, unknown>), ...(value as Record<string, unknown>) };
+      continue;
+    }
     out[key] = value;
   }
   return out;

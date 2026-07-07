@@ -19,6 +19,8 @@ export interface HostFingerprint {
   hostname: string | null;
   /** Which adapter produced this fingerprint (for auditing/merge priority). */
   source: string;
+  /** Nmap scripts, protocol probes, etc. */
+  signals?: Record<string, unknown>;
 }
 
 /**
