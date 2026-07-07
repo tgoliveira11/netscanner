@@ -89,4 +89,11 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
       });
     }
   });
+
+  /** Same as POST /api/agent/restart but without Bearer token (admin UI is localhost-only). */
+  app.post('/api/admin/restart', async (_request, reply) => {
+    c.logger.info('agent restart requested via admin');
+    void reply.send({ ok: true, restarting: true });
+    setImmediate(() => process.exit(0));
+  });
 }

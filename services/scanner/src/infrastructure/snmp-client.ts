@@ -116,7 +116,7 @@ export class SnmpClient {
   }
 
   static parseMac(value: string): string | null {
-    const hex = value.replace(/Hex-STRING:\s*/i, '').trim();
+    const hex = value.replace(/^(?:Hex-)?STRING:\s*/i, '').trim();
     const parts = hex.split(/[\s:]+/).filter(Boolean);
     if (parts.length !== 6) return null;
     return parts.map((p) => p.padStart(2, '0')).join(':').toLowerCase();
