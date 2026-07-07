@@ -1,0 +1,167 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { api } from '../lib/api';
+import { useStore } from '../lib/store';
+import { deviceMeta } from '../lib/device-ui';
+
+function Field({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+      <div className="text-sm text-slate-100">{value ?? '—'}</div>
+    </div>
+  );
+}
+
+/** Slide-over panel with the full per-device detail: attributes, ports, flags, notes. */
+export function DeviceDrawer() {
+  const id = useStore((s) => s.selectedId);
+  const device = useStore((s) => (id ? s.devices[id] : null));
+  const select = useStore((s) => s.select);
+  const applyDevice = useStore((s) => s.applyDevice);
+  const [label, setLabel] = useState('');
+  const [notes, setNotes] = useState('');
+
+  useEffect(() => {
+    setLabel(device?.label ?? '');
+    setNotes(device?.notes ?? '');
+  }, [device?.id, device?.label, device?.notes]);
+
+  if (!id || !device) return null;
+  const meta = deviceMeta(device.deviceType);
+
+  const save = async () => {
+    const { device: updated } = await api.updateDevice(device.id, { label: label || null, notes: notes || null });
+    applyDevice(updated);
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/50" onClick={() => select(null)}>
+      <aside
+        className="h-full w-full max-w-md overflow-y-auto border-l border-edge bg-panel p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl">{meta.icon}</span>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-100">
+                {device.label ?? device.hostname ?? device.ip}
+              </h2>
+              <div className="text-xs text-muted">
+                {meta.label} · {Math.round(device.classificationConfidence * 100)}% confidence
+              </div>
+            </div>
+          </div>
+          <button onClick={() => select(null)} className="btn btn-ghost">
+            Close
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="IP" value={<span className="font-mono">{device.ip}</span>} />
+          <Field label="MAC" value={<span className="font-mono">{device.mac ?? '—'}</span>} />
+          <Field label="Vendor" value={device.vendor} />
+          <Field label="Brand" value={device.brand} />
+          <Field label="Model" value={device.model} />
+          <Field label="Hostname" value={device.hostname} />
+          <Field
+            label="OS"
+            value={
+              device.os
+                ? `${device.os.name ?? device.os.family ?? '?'}${device.os.version ? ` ${device.os.version}` : ''} (${device.os.accuracy ?? 0}%${device.os.source === 'inferred' ? ', inferred' : ''})`
+                : '—'
+            }
+          />
+          <Field
+            label="Fingerbank"
+            value={
+              typeof device.signals?.fingerbankDevice === 'string'
+                ? `${device.signals.fingerbankDevice}${
+                    device.signals.fingerbankVersion ? ` ${device.signals.fingerbankVersion}` : ''
+                  }`
+                : '—'
+            }
+          />
+          <Field
+            label="Connection"
+            value={
+              <span
+                title={
+                  typeof device.signals?.connectionBasis === 'string'
+                    ? device.signals.connectionBasis
+                    : 'Inferred; definitive wired/WiFi needs switch/AP data'
+                }
+              >
+                {device.connectionType === 'wifi'
+                  ? '📶 WiFi'
+                  : device.connectionType === 'wired'
+                    ? '🔌 Wired'
+                    : '❔ Unknown'}
+              </span>
+            }
+          />
+          <Field label="Latency" value={device.latencyMs != null ? `${device.latencyMs} ms` : '—'} />
+          <Field label="Status" value={device.isOnline ? 'online' : 'offline'} />
+          <Field label="First seen" value={new Date(device.firstSeen).toLocaleString()} />
+          <Field label="Last seen" value={new Date(device.lastSeen).toLocaleString()} />
+        </div>
+
+        <section className="mt-5">
+          <h3 className="mb-2 text-sm font-semibold text-slate-200">Open services ({device.services.length})</h3>
+          <div className="space-y-1">
+            {device.services.map((s) => (
+              <div
+                key={`${s.protocol}-${s.port}`}
+                className="flex items-center justify-between rounded-lg border border-edge bg-panelup px-3 py-1.5 text-xs"
+              >
+                <span className="font-mono">
+                  {s.port}/{s.protocol}
+                </span>
+                <span className="text-slate-300">
+                  {[s.serviceName, s.product, s.version].filter(Boolean).join(' ') || '—'}
+                </span>
+              </div>
+            ))}
+            {device.services.length === 0 && <div className="text-xs text-muted">No open ports detected.</div>}
+          </div>
+        </section>
+
+        {device.securityFlags.length > 0 && (
+          <section className="mt-5">
+            <h3 className="mb-2 text-sm font-semibold text-bad">Security findings</h3>
+            <div className="space-y-1">
+              {device.securityFlags.map((f) => (
+                <div key={f.code} className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-1.5 text-xs text-slate-200">
+                  <span className="badge mr-2 bg-bad/20 text-bad">{f.severity}</span>
+                  {f.message}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="mt-5 space-y-2">
+          <h3 className="text-sm font-semibold text-slate-200">Label & notes</h3>
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Friendly name"
+            className="w-full rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Notes…"
+            rows={3}
+            className="w-full rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <button onClick={save} className="btn btn-primary">
+            Save
+          </button>
+        </section>
+      </aside>
+    </div>
+  );
+}

@@ -1,0 +1,55 @@
+// Prisma schema for the device inventory. SQLite by default (portable, zero-setup);
+// swap the datasource provider to postgresql and set DATABASE_URL for production.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model DeviceRecord {
+  id                       String   @id
+  ip                       String
+  mac                      String?  @unique
+  vendor                   String?
+  brand                    String?
+  model                    String?
+  hostname                 String?
+  deviceType               String
+  classificationConfidence Float
+  connectionType           String
+  latencyMs                Float?
+  isOnline                 Boolean  @default(true)
+  label                    String?
+  notes                    String?
+  // Complex fields serialized as JSON strings for DB portability.
+  osJson                   String?
+  servicesJson             String   @default("[]")
+  securityFlagsJson        String   @default("[]")
+  signalsJson              String   @default("{}")
+  firstSeen                DateTime
+  lastSeen                 DateTime
+
+  @@index([ip])
+  @@index([deviceType])
+}
+
+/** Passive DHCP fingerprints captured by the root sniffer — survives restarts. */
+model DhcpFingerprintRecord {
+  mac          String   @id
+  fingerprint  String
+  vendorClass  String?
+  hostname     String?
+  capturedAt   DateTime
+}
+
+/** mDNS / SSDP / LLDP signals observed passively — survives restarts. */
+model PassiveSignalRecord {
+  ip          String   @id
+  mac         String?
+  hostname    String?
+  signalsJson String   @default("{}")
+  updatedAt   DateTime @updatedAt
+}

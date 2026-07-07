@@ -1,0 +1,29 @@
+{
+  "name": "@netscanner/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/static": "^8.0.4",
+    "@netscanner/classification": "workspace:*",
+    "@netscanner/config": "workspace:*",
+    "@netscanner/contracts": "workspace:*",
+    "@netscanner/discovery": "workspace:*",
+    "@netscanner/inventory": "workspace:*",
+    "@netscanner/kernel": "workspace:*",
+    "@netscanner/logger": "workspace:*",
+    "@netscanner/os-abstraction": "workspace:*",
+    "@netscanner/scanner": "workspace:*",
+    "@prisma/client": "^6.2.1",
+    "fastify": "^5.2.1",
+    "socket.io": "^4.8.1",
+    "uuid": "^11.0.5"
+  }
+}

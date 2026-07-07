@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NetScanner — Instalar o agente</title>
+    <style>
+      :root {
+        --base: #0b0f19; --panel: #131a2a; --panelup: #1b2438; --edge: #243049;
+        --accent: #38bdf8; --good: #34d399; --warn: #fbbf24; --muted: #8b98b5; --text: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--base); color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.5;
+      }
+      .wrap { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; }
+      h1 { font-size: 28px; margin: 0 0 4px; }
+      h1 span { color: var(--accent); }
+      .sub { color: var(--muted); margin: 0 0 28px; }
+      .card { border: 1px solid var(--edge); background: var(--panel); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+      .step { display: flex; gap: 14px; }
+      .num { flex: 0 0 28px; height: 28px; border-radius: 999px; background: var(--panelup); border: 1px solid var(--edge);
+        display: grid; place-items: center; font-weight: 700; color: var(--accent); }
+      .step h3 { margin: 2px 0 8px; font-size: 16px; }
+      .os-tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+      .os-tab { border: 1px solid var(--edge); background: var(--panelup); color: var(--text); border-radius: 8px;
+        padding: 6px 12px; font-size: 13px; cursor: pointer; }
+      .os-tab.active { border-color: var(--accent); color: var(--accent); }
+      pre { background: #0a0e17; border: 1px solid var(--edge); border-radius: 10px; padding: 14px 44px 14px 14px;
+        overflow-x: auto; font-size: 13px; position: relative; margin: 0; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .copy { position: absolute; top: 8px; right: 8px; border: 1px solid var(--edge); background: var(--panelup);
+        color: var(--text); border-radius: 7px; padding: 4px 8px; font-size: 12px; cursor: pointer; }
+      .status { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+      .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 4px rgba(251,191,36,.15); }
+      .dot.up { background: var(--good); box-shadow: 0 0 0 4px rgba(52,211,153,.15); }
+      .dot.down { background: var(--muted); box-shadow: none; }
+      .btn { display: inline-block; border: 0; border-radius: 10px; padding: 11px 18px; font-weight: 600; font-size: 14px;
+        cursor: pointer; text-decoration: none; }
+      .btn-primary { background: var(--accent); color: #0b1220; }
+      .btn-primary[disabled] { opacity: .45; cursor: not-allowed; }
+      .btn-ghost { border: 1px solid var(--edge); background: var(--panelup); color: var(--text); }
+      .muted { color: var(--muted); font-size: 13px; }
+      .note { border-left: 3px solid var(--warn); padding: 10px 14px; background: rgba(251,191,36,.06);
+        border-radius: 0 8px 8px 0; font-size: 13px; color: #d7deeb; }
+      details { margin-top: 10px; } summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+      ul { margin: 8px 0; padding-left: 18px; } li { margin: 3px 0; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Net<span>Scanner</span></h1>
+      <p class="sub">Para escanear sua rede, instale o agente local. O navegador sozinho não consegue
+        acessar a rede — o agente roda na sua máquina e o dashboard fala com ele em <code>localhost</code>.</p>
+
+      <div class="card">
+        <div class="step">
+          <div class="num">1</div>
+          <div style="flex:1">
+            <h3>Instale o agente</h3>
+            <div class="os-tabs" id="osTabs">
+              <button class="os-tab" data-os="macos">macOS</button>
+              <button class="os-tab" data-os="linux">Linux</button>
+              <button class="os-tab" data-os="windows">Windows</button>
+            </div>
+            <pre><button class="copy" id="copyBtn">copiar</button><code id="cmd"></code></pre>
+            <p class="muted" id="osHint"></p>
+            <details>
+              <summary>O que este comando faz?</summary>
+              <ul>
+                <li>Verifica/instala Node.js e pnpm (via corepack) e, opcionalmente, nmap.</li>
+                <li>Baixa o NetScanner para <code>~/.netscanner</code> e faz o build do dashboard.</li>
+                <li>Registra um serviço em background (launchd/systemd/Task Scheduler) que sobe o agente no boot.</li>
+                <li>O agente escuta apenas em <code>127.0.0.1:4000</code> — não fica exposto na rede.</li>
+              </ul>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="step">
+          <div class="num">2</div>
+          <div style="flex:1">
+            <h3>Aguardando o agente</h3>
+            <div class="status"><span class="dot" id="dot"></span><span id="statusText">Procurando o agente em localhost:4000…</span></div>
+            <p class="muted">Assim que o serviço subir, esta página detecta automaticamente.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="step">
+          <div class="num">3</div>
+          <div style="flex:1">
+            <h3>Abra o dashboard</h3>
+            <p class="muted">O dashboard é servido pelo próprio agente.</p>
+            <a class="btn btn-primary" id="openBtn" href="http://localhost:4000" target="_blank" rel="noopener" aria-disabled="true" disabled>Abrir dashboard</a>
+            <a class="btn btn-ghost" href="http://localhost:4000" target="_blank" rel="noopener">Já instalei →</a>
+          </div>
+        </div>
+      </div>
+
+      <p class="note">⚠️ Uso autorizado apenas. Escaneie somente redes que você possui ou administra.</p>
+      <details>
+        <summary>Desinstalar</summary>
+        <pre><code id="uninstall"></code></pre>
+      </details>
+    </div>
+
+    <script>
+      // Base URL from which the install scripts are served (same folder as this page).
+      const INSTALL_BASE = location.protocol.startsWith('http')
+        ? location.href.replace(/\/[^/]*(\?.*)?$/, '')
+        : 'https://get.netscanner.example';
+      const AGENT_URL = 'http://localhost:4000';
+
+      const COMMANDS = {
+        macos: `curl -fsSL ${INSTALL_BASE}/install.sh | bash`,
+        linux: `curl -fsSL ${INSTALL_BASE}/install.sh | bash`,
+        windows: `irm ${INSTALL_BASE}/install.ps1 | iex`,
+      };
+      const HINTS = {
+        macos: 'Precisa do Homebrew para instalar nmap automaticamente (opcional). Cole no Terminal.',
+        linux: 'Usa apt/dnf/pacman quando disponível. Cole no seu shell.',
+        windows: 'Cole no PowerShell. Pode pedir elevação para registrar o serviço.',
+      };
+      const UNINSTALL = {
+        macos: 'launchctl unload ~/Library/LaunchAgents/com.netscanner.agent.plist; rm -rf ~/.netscanner ~/Library/LaunchAgents/com.netscanner.agent.plist',
+        linux: 'systemctl --user disable --now netscanner; rm -rf ~/.netscanner ~/.config/systemd/user/netscanner.service',
+        windows: 'Unregister-ScheduledTask -TaskName NetScannerAgent -Confirm:$false; Remove-Item -Recurse -Force $HOME\\.netscanner',
+      };
+
+      function detectOs() {
+        const p = (navigator.userAgentData?.platform || navigator.platform || navigator.userAgent).toLowerCase();
+        if (p.includes('win')) return 'windows';
+        if (p.includes('mac') || p.includes('iphone') || p.includes('ipad')) return 'macos';
+        return 'linux';
+      }
+
+      let currentOs = detectOs();
+      const cmdEl = document.getElementById('cmd');
+      const hintEl = document.getElementById('osHint');
+      const uninstallEl = document.getElementById('uninstall');
+
+      function renderOs(os) {
+        currentOs = os;
+        cmdEl.textContent = COMMANDS[os];
+        hintEl.textContent = HINTS[os];
+        uninstallEl.textContent = UNINSTALL[os];
+        document.querySelectorAll('.os-tab').forEach((t) =>
+          t.classList.toggle('active', t.dataset.os === os),
+        );
+      }
+      document.querySelectorAll('.os-tab').forEach((t) =>
+        t.addEventListener('click', () => renderOs(t.dataset.os)),
+      );
+      renderOs(currentOs);
+
+      document.getElementById('copyBtn').addEventListener('click', async (e) => {
+        try {
+          await navigator.clipboard.writeText(COMMANDS[currentOs]);
+          e.target.textContent = 'copiado!';
+          setTimeout(() => (e.target.textContent = 'copiar'), 1500);
+        } catch {
+          e.target.textContent = 'selecione e copie';
+        }
+      });
+
+      // Poll the local agent. A hosted (https) page may be blocked from reaching
+      // http://localhost by the browser; in that case we stay in "not detected"
+      // and the user can still click "Já instalei".
+      const dot = document.getElementById('dot');
+      const statusText = document.getElementById('statusText');
+      const openBtn = document.getElementById('openBtn');
+
+      async function poll() {
+        try {
+          const res = await fetch(`${AGENT_URL}/api/health`, { cache: 'no-store' });
+          if (!res.ok) throw new Error();
+          const health = await res.json();
+          dot.className = 'dot up';
+          const caps = health.capabilities || {};
+          statusText.textContent = `Agente detectado (v${health.version}) · nmap ${caps.nmap ? 'on' : 'off'} · ${caps.elevated ? 'elevado' : 'sem privilégio'}`;
+          openBtn.removeAttribute('disabled');
+          openBtn.removeAttribute('aria-disabled');
+        } catch {
+          dot.className = 'dot down';
+          statusText.textContent = 'Agente ainda não detectado. Rode o comando acima e aguarde.';
+        }
+      }
+      poll();
+      setInterval(poll, 2500);
+    </script>
+  </body>
+</html>

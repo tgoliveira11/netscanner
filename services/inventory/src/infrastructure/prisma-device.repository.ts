@@ -1,0 +1,75 @@
+import type { PrismaClient } from '@prisma/client';
+import type { Device } from '@netscanner/contracts';
+import type { DeviceFilter, IDeviceRepository } from '../domain/device-repository.js';
+import { DeviceMapper, type DeviceRow } from './device-mapper.js';
+
+/**
+ * SQLite/Postgres-backed repository (via Prisma). Persists the device inventory
+ * so history, first/last-seen, and new-device detection survive restarts.
+ */
+export class PrismaDeviceRepository implements IDeviceRepository {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async findByMac(mac: string): Promise<Device | null> {
+    const row = await this.prisma.deviceRecord.findUnique({ where: { mac } });
+    return row ? DeviceMapper.toDomain(row as DeviceRow) : null;
+  }
+
+  async findByIp(ip: string): Promise<Device | null> {
+    const row = await this.prisma.deviceRecord.findFirst({
+      where: { ip },
+      orderBy: { lastSeen: 'desc' },
+    });
+    return row ? DeviceMapper.toDomain(row as DeviceRow) : null;
+  }
+
+  async findById(id: string): Promise<Device | null> {
+    const row = await this.prisma.deviceRecord.findUnique({ where: { id } });
+    return row ? DeviceMapper.toDomain(row as DeviceRow) : null;
+  }
+
+  async save(device: Device): Promise<void> {
+    const row = DeviceMapper.toRow(device);
+    await this.prisma.deviceRecord.upsert({
+      where: { id: row.id },
+      create: row,
+      update: row,
+    });
+  }
+
+  async list(filter?: DeviceFilter): Promise<Device[]> {
+    const rows = await this.prisma.deviceRecord.findMany({
+      where: {
+        deviceType: filter?.deviceType,
+        isOnline: filter?.onlineOnly ? true : undefined,
+        ...(filter?.search
+          ? {
+              OR: [
+                { ip: { contains: filter.search } },
+                { mac: { contains: filter.search } },
+                { vendor: { contains: filter.search } },
+                { hostname: { contains: filter.search } },
+                { label: { contains: filter.search } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: { ip: 'asc' },
+    });
+    return rows.map((r) => DeviceMapper.toDomain(r as DeviceRow));
+  }
+
+  async markOfflineExcept(onlineIds: string[]): Promise<string[]> {
+    const stale = await this.prisma.deviceRecord.findMany({
+      where: { id: { notIn: onlineIds }, isOnline: true },
+      select: { id: true },
+    });
+    if (stale.length) {
+      await this.prisma.deviceRecord.updateMany({
+        where: { id: { in: stale.map((s) => s.id) } },
+        data: { isOnline: false },
+      });
+    }
+    return stale.map((s) => s.id);
+  }
+}
