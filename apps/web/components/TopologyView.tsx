@@ -16,10 +16,10 @@ export function TopologyView() {
     const list = Object.values(devices);
     const gateway = list.find((d) => d.deviceType === 'router') ?? null;
     const others = list.filter((d) => d.id !== gateway?.id);
-    const dim = 460;
+    const dim = 640;
     const cx = dim / 2;
     const cy = dim / 2;
-    const radius = 170;
+    const radius = Math.min(220, 80 + others.length * 8);
     const positioned = others.map((d, i) => {
       const angle = (i / Math.max(1, others.length)) * Math.PI * 2;
       return { device: d, x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
@@ -28,9 +28,9 @@ export function TopologyView() {
   }, [devices]);
 
   return (
-    <div className="card p-4">
+    <div className="card flex h-full min-h-[480px] flex-col p-4">
       <h3 className="mb-2 text-sm font-semibold text-slate-200">Topology</h3>
-      <svg viewBox={`0 0 ${size.dim} ${size.dim}`} className="mx-auto h-[460px] w-full max-w-[460px]">
+      <svg viewBox={`0 0 ${size.dim} ${size.dim}`} className="mx-auto h-auto w-full flex-1" preserveAspectRatio="xMidYMid meet">
         {nodes.map(({ device, x, y }) => (
           <line
             key={`l-${device.id}`}

@@ -9,6 +9,7 @@ import {
 import type { Container } from '../container.js';
 import { RunScanUseCase } from '../application/run-scan.use-case.js';
 import { authorizeAgentControl } from './agent-control.js';
+import { registerAdminRoutes } from './admin-routes.js';
 
 const VERSION = '0.1.0';
 
@@ -17,6 +18,7 @@ const VERSION = '0.1.0';
  * delegate to a use case, map the result to a DTO. No business logic here (SRP).
  */
 export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Container): void {
+  registerAdminRoutes(app, c);
   app.get('/api/health', async (_request, reply): Promise<HealthResponse> => {
     // Health is non-sensitive and is polled cross-origin by the onboarding site
     // (hosted anywhere) to detect the agent, so it is intentionally CORS-open.

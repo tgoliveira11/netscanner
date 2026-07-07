@@ -31,7 +31,7 @@ export function DeviceTable() {
   );
 
   return (
-    <div className="card overflow-hidden">
+    <div className="card flex h-full flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-edge p-3">
         <input
           value={query}

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OuiLookup, loadOuiTable } from '@netscanner/kernel';
-import { loadConfig, type AppConfig } from '@netscanner/config';
+import { loadConfig, loadEnvFile, resolveConfigFilePath, type AppConfig } from '@netscanner/config';
 import { createLogger, type Logger } from '@netscanner/logger';
 import {
   NodeCommandRunner,
@@ -62,6 +62,8 @@ import { ScanSessionStore } from './application/scan-session.js';
 import { RunScanUseCase } from './application/run-scan.use-case.js';
 import { DeviceEnrichmentService } from './application/device-enrichment.service.js';
 import { BackgroundWorker } from './application/background-worker.js';
+import { createRuntimeSettings, type RuntimeSettingsService } from './application/runtime-settings.service.js';
+import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
 
 /** Fully assembled application graph handed to the HTTP/WS layer. */
 export interface Container {
@@ -81,6 +83,10 @@ export interface Container {
   passiveStore?: IPassiveSignalStore;
   passiveListeners?: PassiveListeners;
   backgroundWorker: BackgroundWorker;
+  snmp: SnmpEnricher;
+  logBuffer: LogRingBuffer;
+  runtimeSettings: RuntimeSettingsService;
+  agentLogPath: string;
   detectPrimaryCidr: () => string | null;
   listInterfaces: typeof listLocalInterfaces;
 }
@@ -182,8 +188,12 @@ async function buildPassiveSignalStore(
  * keeping the dependency graph pointing inward (Clean Architecture / DIP).
  */
 export async function buildContainer(): Promise<Container> {
+  const configPath = resolveConfigFilePath(process.cwd());
+  loadEnvFile(configPath);
   const config = loadConfig();
-  const logger = createLogger('gateway');
+  const logBuffer = new LogRingBuffer(500);
+  const logger: Logger = createLogger('gateway', logBuffer.asStream());
+  const agentLogPath = path.join(process.cwd(), 'agent.log');
   const runner = new NodeCommandRunner();
   const capabilities = await detectCapabilities(runner, config.DISABLE_NMAP);
 
@@ -304,8 +314,7 @@ export async function buildContainer(): Promise<Container> {
     sessions,
     events,
     logger,
-    concurrency: config.SCAN_CONCURRENCY,
-    discoveryTimeoutMs: config.DISCOVERY_TIMEOUT_MS,
+    config,
     elevated: capabilities.elevated,
   });
 
@@ -323,24 +332,35 @@ export async function buildContainer(): Promise<Container> {
     passiveStore,
   });
 
-  return {
+  const listDevices = new ListDevicesUseCase(repo);
+  const getDevice = new GetDeviceUseCase(repo);
+  const updateMeta = new UpdateDeviceMetaUseCase(repo);
+  const exportDevices = new ExportDevicesUseCase(repo);
+
+  const container: Container = {
     config,
     logger,
     capabilities,
     events,
     sessions,
     runScan,
-    listDevices: new ListDevicesUseCase(repo),
-    getDevice: new GetDeviceUseCase(repo),
-    updateMeta: new UpdateDeviceMetaUseCase(repo),
-    exportDevices: new ExportDevicesUseCase(repo),
+    listDevices,
+    getDevice,
+    updateMeta,
+    exportDevices,
     leaseSource,
     dhcpSource,
     dhcpStore,
     passiveStore,
     passiveListeners,
     backgroundWorker,
+    snmp,
+    logBuffer,
+    runtimeSettings: null as unknown as RuntimeSettingsService,
+    agentLogPath,
     detectPrimaryCidr,
     listInterfaces: listLocalInterfaces,
   };
+  container.runtimeSettings = createRuntimeSettings(container, configPath);
+  return container;
 }
