@@ -10,7 +10,6 @@ import {
   dhcpPayloadFromTcpdumpHex,
   isTcpdumpHexLine,
   isTcpdumpPacketHeader,
-  parseDhcpPacket as parseDhcp,
 } from './dhcp-tcpdump-parser.js';
 
 export interface DhcpSnifferOptions {
