@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+out/
+.turbo/
+coverage/
+*.log
+.env
+.env.local
+.agent-control-token
+*.tsbuildinfo
+services/inventory/prisma/*.db
+services/inventory/prisma/*.db-journal
+.DS_Store

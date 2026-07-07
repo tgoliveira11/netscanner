@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@netscanner/web", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "gateway",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@netscanner/gateway", "dev"],
+      "port": 4000
+    },
+    {
+      "name": "onboarding",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "apps/onboarding"],
+      "port": 8080
+    }
+  ]
+}

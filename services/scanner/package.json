@@ -1,0 +1,19 @@
+{
+  "name": "@netscanner/scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@netscanner/contracts": "workspace:*",
+    "@netscanner/logger": "workspace:*",
+    "@netscanner/os-abstraction": "workspace:*",
+    "fast-xml-parser": "^4.5.1"
+  }
+}

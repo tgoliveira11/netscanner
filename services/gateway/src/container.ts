@@ -1,0 +1,346 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { OuiLookup, loadOuiTable } from '@netscanner/kernel';
+import { loadConfig, type AppConfig } from '@netscanner/config';
+import { createLogger, type Logger } from '@netscanner/logger';
+import {
+  NodeCommandRunner,
+  detectCapabilities,
+  detectPrimaryCidr,
+  listLocalInterfaces,
+  type ScanCapabilities,
+} from '@netscanner/os-abstraction';
+import {
+  DiscoverHostsUseCase,
+  PingSweepProbe,
+  ArpTableProbe,
+  MdnsProbe,
+  SsdpProbe,
+  NetbiosProbe,
+  LlmnrProbe,
+  Ipv6NeighborProbe,
+  PfSenseRestAdapter,
+  DhcpSniffer,
+  FingerbankClient,
+  PassiveListeners,
+  InMemoryPassiveSignalStore,
+  type IRouterLeaseSource,
+  type IDhcpFingerprintSource,
+  type IDeviceFingerprintResolver,
+  type IPassiveSignalStore,
+} from '@netscanner/discovery';
+import {
+  FingerprintHostUseCase,
+  NetworkEnricher,
+  NmapScanner,
+  TcpConnectScanner,
+  SnmpEnricher,
+} from '@netscanner/scanner';
+import {
+  ClassificationEngine,
+  ClassifyDeviceUseCase,
+  SecurityAnalyzer,
+  defaultRules,
+} from '@netscanner/classification';
+import {
+  ExportDevicesUseCase,
+  GetDeviceUseCase,
+  InMemoryDeviceRepository,
+  InMemoryDhcpFingerprintStore,
+  ListDevicesUseCase,
+  PrismaDeviceRepository,
+  PrismaDhcpFingerprintStore,
+  PrismaPassiveSignalStore,
+  UpdateDeviceMetaUseCase,
+  UpsertDeviceUseCase,
+  type IDeviceRepository,
+  type IDhcpFingerprintStore,
+} from '@netscanner/inventory';
+import { InProcessEventBus } from './infrastructure/event-bus.js';
+import { ScanSessionStore } from './application/scan-session.js';
+import { RunScanUseCase } from './application/run-scan.use-case.js';
+import { DeviceEnrichmentService } from './application/device-enrichment.service.js';
+import { BackgroundWorker } from './application/background-worker.js';
+
+/** Fully assembled application graph handed to the HTTP/WS layer. */
+export interface Container {
+  config: AppConfig;
+  logger: Logger;
+  capabilities: ScanCapabilities;
+  events: InProcessEventBus;
+  sessions: ScanSessionStore;
+  runScan: RunScanUseCase;
+  listDevices: ListDevicesUseCase;
+  getDevice: GetDeviceUseCase;
+  updateMeta: UpdateDeviceMetaUseCase;
+  exportDevices: ExportDevicesUseCase;
+  leaseSource?: IRouterLeaseSource;
+  dhcpSource?: IDhcpFingerprintSource;
+  dhcpStore?: IDhcpFingerprintStore;
+  passiveStore?: IPassiveSignalStore;
+  passiveListeners?: PassiveListeners;
+  backgroundWorker: BackgroundWorker;
+  detectPrimaryCidr: () => string | null;
+  listInterfaces: typeof listLocalInterfaces;
+}
+
+/**
+ * Resolve a relative SQLite `file:` URL to an absolute path anchored at the
+ * inventory package, so persistence works no matter which directory the process
+ * was launched from (pnpm runs scripts in the package dir).
+ */
+function resolveSqliteUrl(url: string): string {
+  if (!url.startsWith('file:')) return url;
+  const rel = url.slice('file:'.length);
+  if (path.isAbsolute(rel)) return url;
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  while (dir !== path.dirname(dir) && !existsSync(path.join(dir, 'pnpm-workspace.yaml'))) {
+    dir = path.dirname(dir);
+  }
+  return `file:${path.resolve(dir, 'services/inventory/prisma', rel)}`;
+}
+
+/** Attempt Prisma persistence; fall back to in-memory if the client isn't ready. */
+async function buildRepository(config: AppConfig, logger: Logger): Promise<IDeviceRepository> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryDeviceRepository();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    logger.info('using Prisma persistence');
+    return new PrismaDeviceRepository(prisma);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const mustPersist =
+      process.env.PERSISTENCE !== 'memory' &&
+      (process.env.NODE_ENV === 'production' || config.NODE_ENV === 'production');
+    if (mustPersist) {
+      throw new Error(
+        `Prisma persistence required in production but unavailable (${msg}). Run pnpm db:push.`,
+      );
+    }
+    logger.warn({ error: msg }, 'Prisma unavailable (run `pnpm db:push`); falling back to in-memory storage');
+    return new InMemoryDeviceRepository();
+  }
+}
+
+async function buildDhcpFingerprintStore(
+  config: AppConfig,
+  logger: Logger,
+): Promise<IDhcpFingerprintStore> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryDhcpFingerprintStore();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    logger.info('using Prisma DHCP fingerprint persistence');
+    return new PrismaDhcpFingerprintStore(prisma);
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'DHCP fingerprint Prisma unavailable; using in-memory store',
+    );
+    return new InMemoryDhcpFingerprintStore();
+  }
+}
+
+async function buildPassiveSignalStore(
+  config: AppConfig,
+  logger: Logger,
+): Promise<IPassiveSignalStore> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryPassiveSignalStore();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    const store = new PrismaPassiveSignalStore(prisma);
+    await store.hydrate();
+    logger.info('using Prisma passive signal persistence');
+    return store;
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'passive signal Prisma unavailable; using in-memory store',
+    );
+    return new InMemoryPassiveSignalStore();
+  }
+}
+
+/**
+ * Composition root: the single place where interfaces are bound to concrete
+ * implementations. Nothing else in the codebase constructs infrastructure,
+ * keeping the dependency graph pointing inward (Clean Architecture / DIP).
+ */
+export async function buildContainer(): Promise<Container> {
+  const config = loadConfig();
+  const logger = createLogger('gateway');
+  const runner = new NodeCommandRunner();
+  const capabilities = await detectCapabilities(runner, config.DISABLE_NMAP);
+
+  logger.info({ capabilities }, 'scan capabilities detected');
+
+  const ping = new PingSweepProbe(runner);
+  const arp = new ArpTableProbe(runner);
+
+  const discover = new DiscoverHostsUseCase(
+    [
+      ping,
+      arp,
+      new MdnsProbe(),
+      new SsdpProbe(),
+      new NetbiosProbe(),
+      new LlmnrProbe(),
+      new Ipv6NeighborProbe(runner),
+    ],
+    logger,
+  );
+  const lightDiscover = new DiscoverHostsUseCase([ping, arp], logger);
+
+  const fingerprint = new FingerprintHostUseCase(
+    [
+      new TcpConnectScanner(),
+      new NmapScanner(runner, { elevated: capabilities.elevated, disabled: !capabilities.nmap }),
+    ],
+    logger,
+  );
+
+  const vendorLookup = new OuiLookup(loadOuiTable());
+  logger.info({ ouiVendors: vendorLookup.size }, 'OUI vendor database loaded');
+  const engine = new ClassificationEngine(defaultRules());
+  const classify = new ClassifyDeviceUseCase(engine, vendorLookup, new SecurityAnalyzer());
+
+  const repo = await buildRepository(config, logger);
+  const upsert = new UpsertDeviceUseCase(repo);
+  const dhcpStore = await buildDhcpFingerprintStore(config, logger);
+  const passiveStore = await buildPassiveSignalStore(config, logger);
+  const enricher = new NetworkEnricher();
+  const snmp = new SnmpEnricher(runner, logger, config.SNMP_COMMUNITY, config.SNMP_ENABLED);
+
+  let leaseSource: IRouterLeaseSource | undefined;
+  if (config.PFSENSE_URL && config.PFSENSE_API_KEY) {
+    leaseSource = new PfSenseRestAdapter(
+      {
+        baseUrl: config.PFSENSE_URL,
+        apiKey: config.PFSENSE_API_KEY,
+        leasesPath: config.PFSENSE_LEASES_PATH,
+        insecureTls: config.PFSENSE_INSECURE_TLS,
+      },
+      logger,
+    );
+    logger.info({ url: config.PFSENSE_URL }, 'pfSense lease integration enabled');
+  }
+
+  let fingerbank: IDeviceFingerprintResolver | undefined;
+  if (config.FINGERBANK_API_KEY) {
+    fingerbank = new FingerbankClient(config.FINGERBANK_API_KEY, logger);
+    logger.info('Fingerbank device identification enabled');
+  }
+
+  let dhcpSource: IDhcpFingerprintSource | undefined;
+  const ifaces = listLocalInterfaces();
+  const primaryIface = ifaces.find((i) => i.cidr === detectPrimaryCidr()) ?? ifaces[0];
+  if (config.DHCP_SNIFF && capabilities.elevated) {
+    dhcpSource = new DhcpSniffer(logger, {
+      iface: primaryIface?.name ?? 'en0',
+      persist: async (fp) =>
+        dhcpStore.save({
+          mac: fp.mac,
+          fingerprint: fp.fingerprint,
+          vendorClass: fp.vendorClass,
+          hostname: fp.hostname,
+          capturedAt: new Date().toISOString(),
+        }),
+      hydrate: () => dhcpStore.loadAll(),
+    });
+  }
+
+  const enrichment = new DeviceEnrichmentService({
+    classify,
+    upsert,
+    repo,
+    dhcpSource,
+    fingerbank,
+    passiveStore,
+    snmp,
+  });
+
+  let passiveListeners: PassiveListeners | undefined;
+  if (config.PASSIVE_LISTENERS_ENABLED) {
+    passiveListeners = new PassiveListeners({
+      store: passiveStore,
+      logger,
+      runner,
+      iface: primaryIface?.name ?? 'en0',
+      lldpEnabled: config.LLDP_PASSIVE_ENABLED && capabilities.elevated,
+    });
+  }
+
+  const events = new InProcessEventBus();
+  const sessions = new ScanSessionStore();
+  const runScan = new RunScanUseCase({
+    discover,
+    lightDiscover,
+    fingerprint,
+    enricher,
+    enrichment,
+    leaseSource,
+    dhcpSource,
+    fingerbank,
+    passiveStore,
+    snmp,
+    classify,
+    upsert,
+    repo,
+    sessions,
+    events,
+    logger,
+    concurrency: config.SCAN_CONCURRENCY,
+    discoveryTimeoutMs: config.DISCOVERY_TIMEOUT_MS,
+    elevated: capabilities.elevated,
+  });
+
+  const backgroundWorker = new BackgroundWorker({
+    config,
+    logger,
+    enrichment,
+    repo,
+    lightDiscover,
+    runScan,
+    sessions,
+    events,
+    detectPrimaryCidr,
+    dhcpSource,
+    passiveStore,
+  });
+
+  return {
+    config,
+    logger,
+    capabilities,
+    events,
+    sessions,
+    runScan,
+    listDevices: new ListDevicesUseCase(repo),
+    getDevice: new GetDeviceUseCase(repo),
+    updateMeta: new UpdateDeviceMetaUseCase(repo),
+    exportDevices: new ExportDevicesUseCase(repo),
+    leaseSource,
+    dhcpSource,
+    dhcpStore,
+    passiveStore,
+    passiveListeners,
+    backgroundWorker,
+    detectPrimaryCidr,
+    listInterfaces: listLocalInterfaces,
+  };
+}

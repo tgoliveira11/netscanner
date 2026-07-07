@@ -1,0 +1,37 @@
+# Optional containerized run. The gateway hosts all backend services in one
+# process (modular monorepo); the web app is separate. The gateway uses host
+# networking + raw-socket capabilities so it can actually see the LAN — this is
+# required for ARP/ICMP/mDNS/SSDP discovery and only works on Linux hosts.
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gateway
+    # Host networking is required to scan the physical LAN from a container.
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      GATEWAY_PORT: 4000
+      WEB_ORIGIN: http://localhost:3000
+      DATABASE_URL: file:/data/netscanner.db
+      SCAN_CONCURRENCY: 64
+    volumes:
+      - netscanner-data:/data
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+    ports:
+      - '3000:3000'
+    depends_on:
+      - gateway
+
+volumes:
+  netscanner-data:
