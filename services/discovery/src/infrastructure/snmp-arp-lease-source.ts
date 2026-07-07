@@ -38,7 +38,7 @@ export class SnmpArpLeaseSource implements IRouterLeaseSource {
         if (!m) continue;
         const oidParts = m[1]!.split('.');
         const ip = oidParts.slice(-4).join('.');
-        const macRaw = m[2]!.replace(/Hex-STRING:\s*/i, '').trim();
+        const macRaw = m[2]!.replace(/^(?:Hex-)?STRING:\s*/i, '').trim();
         const macParts = macRaw.split(/[\s:]+/).filter(Boolean);
         if (macParts.length !== 6) continue;
         const macStr = macParts.map((p) => p.padStart(2, '0')).join(':');
