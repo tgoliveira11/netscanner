@@ -7,3 +7,8 @@ export * from './infrastructure/nmap-xml.parser.js';
 export * from './infrastructure/nmap.scanner.js';
 export * from './infrastructure/tcp-connect.scanner.js';
 export * from './infrastructure/snmp-enricher.js';
+export * from './infrastructure/snmp-client.js';
+export * from './infrastructure/snmp-connection-source.js';
+export * from './infrastructure/composite-connection-source.js';
+export * from './infrastructure/unifi-connection-source.js';
+export * from './infrastructure/omada-connection-source.js';

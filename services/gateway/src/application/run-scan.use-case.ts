@@ -1,12 +1,13 @@
 import { Cidr, IpAddress, isOk } from '@netscanner/kernel';
-import { reverseDns } from '@netscanner/os-abstraction';
+import { reverseDns, batchReverseDns } from '@netscanner/os-abstraction';
 import type { AppConfig } from '@netscanner/config';
-import type { IEventPublisher, ScanType } from '@netscanner/contracts';
+import type { IEventPublisher, ScanType, IConnectionSource } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
 import {
   DiscoverHostsUseCase,
   mapPool,
   mergePassiveSignals,
+  buildFingerbankQuery,
   type IRouterLeaseSource,
   type RouterLease,
   type IDhcpFingerprintSource,
@@ -18,6 +19,8 @@ import { ClassifyDeviceUseCase } from '@netscanner/classification';
 import { UpsertDeviceUseCase, type DeviceSnapshot, type IDeviceRepository } from '@netscanner/inventory';
 import type { ScanSessionStore } from './scan-session.js';
 import { DeviceEnrichmentService } from './device-enrichment.service.js';
+import { applyConnectionSignals } from './connection-signals.js';
+import type { Device } from '@netscanner/contracts';
 
 export interface RunScanDeps {
   discover: DiscoverHostsUseCase;
@@ -34,6 +37,7 @@ export interface RunScanDeps {
   fingerbank?: IDeviceFingerprintResolver;
   passiveStore?: IPassiveSignalStore;
   snmp?: SnmpEnricher;
+  connectionSource?: IConnectionSource;
   classify: ClassifyDeviceUseCase;
   upsert: UpsertDeviceUseCase;
   repo: IDeviceRepository;
@@ -67,6 +71,16 @@ export class RunScanUseCase {
     // provide hostname/VLAN for every device and let us surface hosts on other
     // subnets the local scan can't reach.
     const leases = await this.fetchLeases();
+    if (this.deps.connectionSource) {
+      try {
+        await this.deps.connectionSource.refresh();
+      } catch (error) {
+        this.deps.logger.warn(
+          { error: error instanceof Error ? error.message : error },
+          'SNMP bridge refresh failed (continuing)',
+        );
+      }
+    }
     const leaseByMac = new Map<string, RouterLease>();
     const leaseByIp = new Map<string, RouterLease>();
     for (const lease of leases) {
@@ -104,15 +118,21 @@ export class RunScanUseCase {
       });
       if (s) events.emit({ type: 'scan.progress', payload: s });
 
+      const ptrMap = await batchReverseDns(
+        hosts.map((h) => h.ip),
+        this.deps.config.SCAN_CONCURRENCY,
+      );
+
       const seenIds: string[] = [];
       await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
+        const depth = await this.resolveDepth(host.ip, host.mac, scanType);
         const fp = await this.deps.fingerprint.execute({
           ip: host.ip,
-          depth: DEPTH_BY_TYPE[scanType],
+          depth,
           // When running elevated, attempt OS detection on every non-quick scan
           // (not just deep) so the OS column populates without extra steps.
-          osDetection: scanType !== 'quick' && this.deps.elevated,
-          timeoutMs: scanType === 'deep' ? 60000 : scanType === 'standard' ? 30000 : 15000,
+          osDetection: depth !== 'quick' && this.deps.elevated,
+          timeoutMs: depth === 'deep' ? 60000 : depth === 'standard' ? 30000 : 15000,
         });
 
         // Application-layer enrichment: UPnP description, HTTP Server/title, TLS
@@ -121,6 +141,7 @@ export class RunScanUseCase {
         const lease = leaseFor(host.ip, host.mac);
         const dhcp = host.mac ? this.deps.dhcpSource?.get(host.mac) : undefined;
         let mergedSignals: Record<string, unknown> = { ...host.signals, ...enrichment.signals };
+        if (fp.signals) mergedSignals = { ...mergedSignals, ...fp.signals };
         if (this.deps.passiveStore) {
           const fromPassive = mergePassiveSignals(
             this.deps.passiveStore.get(host.ip),
@@ -133,8 +154,11 @@ export class RunScanUseCase {
           mergedSignals['dhcpVendorClass'] = dhcp.vendorClass;
           mergedSignals['dhcpHostname'] = dhcp.hostname;
         }
+        if (lease?.interface) mergedSignals['routerInterface'] = lease.interface;
+        if (lease?.description) mergedSignals['routerDescription'] = lease.description;
         if (lease?.interface) mergedSignals['pfsenseInterface'] = lease.interface;
         if (lease?.description) mergedSignals['pfsenseDescription'] = lease.description;
+        mergedSignals = applyConnectionSignals(host.mac, mergedSignals, this.deps.connectionSource);
 
         const openPorts = new Set(fp.services.filter((s) => s.state === 'open').map((s) => s.port));
         if (this.deps.snmp && (openPorts.has(161) || host.ip === gatewayIp)) {
@@ -145,16 +169,17 @@ export class RunScanUseCase {
         const hostname =
           lease?.hostname ??
           dhcp?.hostname ??
+          strSignal(mergedSignals, 'resolverCacheName') ??
           strSignal(mergedSignals, 'netbiosName') ??
           strSignal(mergedSignals, 'llmnrName') ??
           strSignal(mergedSignals, 'lldpSystemName') ??
           host.hostname ??
           fp.hostname ??
           enrichment.hostname ??
+          ptrMap.get(host.ip) ??
           (await reverseDns(host.ip));
 
-        // Fingerbank: exact model/OS from the DHCP fingerprint (+ MAC/hostname).
-        const fb = await this.resolveFingerbank(host.mac, hostname);
+        const fb = await this.resolveFingerbank(host.mac, hostname, mergedSignals);
         if (fb) Object.assign(mergedSignals, fb);
 
         const classification = this.deps.classify.execute({
@@ -213,7 +238,7 @@ export class RunScanUseCase {
           pfsenseDescription: lease.description,
           source: 'pfsense-lease',
         };
-        const fb = await this.resolveFingerbank(lease.mac, lease.hostname);
+        const fb = await this.resolveFingerbank(lease.mac, lease.hostname, signals);
         if (fb) Object.assign(signals, fb);
         const classification = this.deps.classify.execute({
           ip: lease.ip,
@@ -360,17 +385,15 @@ export class RunScanUseCase {
   private async resolveFingerbank(
     mac: string | null,
     hostname: string | null,
+    signals: Record<string, unknown>,
   ): Promise<Record<string, unknown> | null> {
     if (!this.deps.fingerbank) return null;
     const fp = mac ? this.deps.dhcpSource?.get(mac) : undefined;
-    // Nothing useful to send if we have neither a fingerprint nor a MAC.
-    if (!fp && !mac) return null;
-    const res = await this.deps.fingerbank.resolve({
-      mac,
-      dhcpFingerprint: fp?.fingerprint,
-      dhcpVendor: fp?.vendorClass,
-      hostname,
-    });
+    const query = buildFingerbankQuery(mac, hostname, signals, fp);
+    if (!query.dhcpFingerprint && !query.mac && !query.userAgents?.length && !query.dhcpv6Fingerprint) {
+      return null;
+    }
+    const res = await this.deps.fingerbank.resolve(query);
     if (!res) return null;
     return {
       fingerbankDevice: res.deviceName,
@@ -378,6 +401,22 @@ export class RunScanUseCase {
       fingerbankVersion: res.version,
       fingerbankScore: res.score,
     };
+  }
+
+  /** Adaptive depth: skip deep probes on well-known inventory rows. */
+  private async resolveDepth(ip: string, mac: string | null, scanType: ScanType): Promise<ScanDepth> {
+    const base = DEPTH_BY_TYPE[scanType];
+    if (!this.deps.config.ADAPTIVE_SCAN_ENABLED || scanType === 'quick') return base;
+
+    const existing: Device | null =
+      (mac ? await this.deps.repo.findByMac(mac) : null) ?? (await this.deps.repo.findByIp(ip));
+    if (!existing) return base;
+
+    const known =
+      existing.classificationConfidence >= 0.7 &&
+      Boolean(existing.os || existing.model) &&
+      existing.services.filter((s) => s.state === 'open').length >= 2;
+    return known ? 'quick' : base;
   }
 
   /** Fetch router leases, tolerating an unconfigured/unavailable integration. */

@@ -4,9 +4,11 @@ import type {
   IDeviceFingerprintResolver,
   IPassiveSignalStore,
 } from '@netscanner/discovery';
-import { mergePassiveSignals } from '@netscanner/discovery';
+import { mergePassiveSignals, buildFingerbankQuery } from '@netscanner/discovery';
+import type { IConnectionSource } from '@netscanner/contracts';
 import { ClassifyDeviceUseCase } from '@netscanner/classification';
 import type { SnmpEnricher } from '@netscanner/scanner';
+import { applyConnectionSignals } from './connection-signals.js';
 import {
   UpsertDeviceUseCase,
   type DeviceSnapshot,
@@ -22,6 +24,7 @@ export interface DeviceEnrichmentDeps {
   fingerbank?: IDeviceFingerprintResolver;
   passiveStore?: IPassiveSignalStore;
   snmp?: SnmpEnricher;
+  connectionSource?: IConnectionSource;
 }
 
 export interface EnrichHostInput {
@@ -65,16 +68,15 @@ export class DeviceEnrichmentService {
   async resolveFingerbank(
     mac: string | null,
     hostname: string | null,
+    signals: Record<string, unknown> = {},
   ): Promise<Record<string, unknown> | null> {
     if (!this.deps.fingerbank) return null;
     const fp = mac ? this.deps.dhcpSource?.get(mac) : undefined;
-    if (!fp && !mac) return null;
-    const res = await this.deps.fingerbank.resolve({
-      mac,
-      dhcpFingerprint: fp?.fingerprint,
-      dhcpVendor: fp?.vendorClass,
-      hostname,
-    });
+    const query = buildFingerbankQuery(mac, hostname, signals, fp);
+    if (!query.dhcpFingerprint && !query.mac && !query.userAgents?.length && !query.dhcpv6Fingerprint) {
+      return null;
+    }
+    const res = await this.deps.fingerbank.resolve(query);
     if (!res) return null;
     return {
       fingerbankDevice: res.deviceName,
@@ -91,6 +93,7 @@ export class DeviceEnrichmentService {
     const dhcp = input.mac ? this.deps.dhcpSource?.get(input.mac) : undefined;
     const hostname =
       dhcp?.hostname ??
+      readStr(mergedSignals, 'resolverCacheName') ??
       readStr(mergedSignals, 'netbiosName') ??
       readStr(mergedSignals, 'llmnrName') ??
       readStr(mergedSignals, 'lldpSystemName') ??
@@ -102,8 +105,10 @@ export class DeviceEnrichmentService {
       if (snmp) mergedSignals = { ...mergedSignals, ...this.deps.snmp.signalsFrom(snmp) };
     }
 
-    const fb = await this.resolveFingerbank(input.mac, hostname);
+    const fb = await this.resolveFingerbank(input.mac, hostname, mergedSignals);
     if (fb) mergedSignals = { ...mergedSignals, ...fb };
+
+    mergedSignals = applyConnectionSignals(input.mac, mergedSignals, this.deps.connectionSource);
 
     const nmapOs = input.os?.source === 'nmap' ? input.os : null;
 
@@ -163,7 +168,15 @@ export class DeviceEnrichmentService {
     const storedFp = device.signals['dhcpFingerprint'];
     const hasFb = typeof device.signals['fingerbankDevice'] === 'string';
     if (storedFp !== dhcp.fingerprint) return true;
-    if (!hasFb && this.deps.fingerbank) return true;
+    if (!hasFb && this.deps.fingerbank) {
+      const passive = this.mergePassiveSignals(device.ip, device.mac, {});
+      const hasPassiveFbHints =
+        passive['mdnsModel'] ||
+        passive['ja3Hash'] ||
+        passive['mqttOpen'] ||
+        passive['ipv6Duid'];
+      if (hasPassiveFbHints || dhcp) return true;
+    }
     if (!device.os || !device.model) return true;
     if (device.os && !device.os.version && dhcp.vendorClass) return true;
     return false;
@@ -173,7 +186,9 @@ export class DeviceEnrichmentService {
     const store = this.deps.passiveStore;
     if (!store) return false;
     const passive = this.mergePassiveSignals(device.ip, device.mac, {});
+    const skipKeys = new Set(['dnsQuery', 'dnsRecentQueries', 'dnsPassive']);
     for (const [key, value] of Object.entries(passive)) {
+      if (skipKeys.has(key)) continue;
       if (value == null || value === '') continue;
       if (device.signals[key] !== value) return true;
     }

@@ -2,13 +2,14 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OuiLookup, loadOuiTable } from '@netscanner/kernel';
-import { loadConfig, loadEnvFile, resolveConfigFilePath, type AppConfig } from '@netscanner/config';
+import { loadConfig, loadEnvFile, resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, type AppConfig } from '@netscanner/config';
 import { createLogger, type Logger } from '@netscanner/logger';
 import {
   NodeCommandRunner,
   detectCapabilities,
   detectPrimaryCidr,
   listLocalInterfaces,
+  listScanCidrs,
   type ScanCapabilities,
 } from '@netscanner/os-abstraction';
 import {
@@ -21,10 +22,18 @@ import {
   LlmnrProbe,
   Ipv6NeighborProbe,
   PfSenseRestAdapter,
+  FritzBoxHttpAdapter,
+  SnmpArpLeaseSource,
+  CompositeLeaseSource,
   DhcpSniffer,
   FingerbankClient,
   PassiveListeners,
   InMemoryPassiveSignalStore,
+  HttpRouterScrapeAdapter,
+  ProtocolProbe,
+  MacDnsCacheProbe,
+  MasscanProbe,
+  type IHostProbe,
   type IRouterLeaseSource,
   type IDhcpFingerprintSource,
   type IDeviceFingerprintResolver,
@@ -36,6 +45,11 @@ import {
   NmapScanner,
   TcpConnectScanner,
   SnmpEnricher,
+  SnmpConnectionSource,
+  CompositeConnectionSource,
+  UnifiConnectionSource,
+  OmadaConnectionSource,
+  type SnmpV3Config,
 } from '@netscanner/scanner';
 import {
   ClassificationEngine,
@@ -57,6 +71,7 @@ import {
   type IDeviceRepository,
   type IDhcpFingerprintStore,
 } from '@netscanner/inventory';
+import type { IConnectionSource } from '@netscanner/contracts';
 import { InProcessEventBus } from './infrastructure/event-bus.js';
 import { ScanSessionStore } from './application/scan-session.js';
 import { RunScanUseCase } from './application/run-scan.use-case.js';
@@ -84,10 +99,13 @@ export interface Container {
   passiveListeners?: PassiveListeners;
   backgroundWorker: BackgroundWorker;
   snmp: SnmpEnricher;
+  fingerbank?: FingerbankClient;
+  connectionSource?: IConnectionSource;
   logBuffer: LogRingBuffer;
   runtimeSettings: RuntimeSettingsService;
   agentLogPath: string;
   detectPrimaryCidr: () => string | null;
+  listScanCidrs: () => string[];
   listInterfaces: typeof listLocalInterfaces;
 }
 
@@ -202,15 +220,28 @@ export async function buildContainer(): Promise<Container> {
   const ping = new PingSweepProbe(runner);
   const arp = new ArpTableProbe(runner);
 
+  const snmpCommunities = resolveSnmpCommunities(config);
+  const snmpV3: SnmpV3Config | null = resolveSnmpV3(config);
+
+  const enrichProbes: IHostProbe[] = [
+    new MdnsProbe(),
+    new SsdpProbe(),
+    new NetbiosProbe(),
+    new LlmnrProbe(),
+    new Ipv6NeighborProbe(runner),
+  ];
+  if (config.PROTOCOL_PROBE_ENABLED) enrichProbes.push(new ProtocolProbe());
+  if (config.MAC_DNS_CACHE_ENABLED) enrichProbes.push(new MacDnsCacheProbe(runner));
+
   const discover = new DiscoverHostsUseCase(
     [
       ping,
       arp,
-      new MdnsProbe(),
-      new SsdpProbe(),
-      new NetbiosProbe(),
-      new LlmnrProbe(),
-      new Ipv6NeighborProbe(runner),
+      new MasscanProbe(runner, {
+        enabled: config.MASSCAN_ENABLED,
+        rate: config.MASSCAN_RATE,
+      }),
+      ...enrichProbes,
     ],
     logger,
   );
@@ -234,23 +265,100 @@ export async function buildContainer(): Promise<Container> {
   const dhcpStore = await buildDhcpFingerprintStore(config, logger);
   const passiveStore = await buildPassiveSignalStore(config, logger);
   const enricher = new NetworkEnricher();
-  const snmp = new SnmpEnricher(runner, logger, config.SNMP_COMMUNITY, config.SNMP_ENABLED);
+  const snmp = new SnmpEnricher(runner, logger, snmpCommunities, config.SNMP_ENABLED, snmpV3);
 
-  let leaseSource: IRouterLeaseSource | undefined;
+  const connectionSources: IConnectionSource[] = [];
+  if (config.SNMP_SWITCH_HOST && config.SNMP_ENABLED) {
+    connectionSources.push(
+      new SnmpConnectionSource(
+        runner,
+        logger,
+        config.SNMP_SWITCH_HOST,
+        snmpCommunities.join(','),
+        parseWifiPorts(config.SNMP_WIFI_PORTS),
+        true,
+        snmpV3,
+      ),
+    );
+    logger.info({ switch: config.SNMP_SWITCH_HOST }, 'SNMP BRIDGE-MIB connection source enabled');
+  }
+  if (config.UNIFI_URL && config.UNIFI_API_KEY) {
+    connectionSources.push(
+      new UnifiConnectionSource(config.UNIFI_URL, config.UNIFI_API_KEY, config.UNIFI_SITE, logger),
+    );
+    logger.info({ url: config.UNIFI_URL }, 'UniFi connection source enabled');
+  }
+  if (config.OMADA_URL && config.OMADA_CLIENT_ID && config.OMADA_CLIENT_SECRET && config.OMADA_SITE_ID) {
+    connectionSources.push(
+      new OmadaConnectionSource(
+        config.OMADA_URL,
+        config.OMADA_CLIENT_ID,
+        config.OMADA_CLIENT_SECRET,
+        config.OMADA_SITE_ID,
+        logger,
+      ),
+    );
+    logger.info({ url: config.OMADA_URL }, 'Omada connection source enabled');
+  }
+  let connectionSource: IConnectionSource | undefined;
+  if (connectionSources.length === 1) connectionSource = connectionSources[0];
+  else if (connectionSources.length > 1) connectionSource = new CompositeConnectionSource(connectionSources);
+
+  const leaseSources: IRouterLeaseSource[] = [];
   if (config.PFSENSE_URL && config.PFSENSE_API_KEY) {
-    leaseSource = new PfSenseRestAdapter(
-      {
-        baseUrl: config.PFSENSE_URL,
-        apiKey: config.PFSENSE_API_KEY,
-        leasesPath: config.PFSENSE_LEASES_PATH,
-        insecureTls: config.PFSENSE_INSECURE_TLS,
-      },
-      logger,
+    leaseSources.push(
+      new PfSenseRestAdapter(
+        {
+          baseUrl: config.PFSENSE_URL,
+          apiKey: config.PFSENSE_API_KEY,
+          leasesPath: config.PFSENSE_LEASES_PATH,
+          insecureTls: config.PFSENSE_INSECURE_TLS,
+        },
+        logger,
+      ),
     );
     logger.info({ url: config.PFSENSE_URL }, 'pfSense lease integration enabled');
   }
+  if (config.ROUTER_SNMP_HOST && config.SNMP_ENABLED) {
+    leaseSources.push(
+      new SnmpArpLeaseSource(runner, logger, config.ROUTER_SNMP_HOST, snmpCommunities, true),
+    );
+    logger.info({ host: config.ROUTER_SNMP_HOST }, 'SNMP ARP lease source enabled');
+  }
+  if (config.ROUTER_SCRAPE_URL && config.ROUTER_SCRAPE_KIND) {
+    leaseSources.push(
+      new HttpRouterScrapeAdapter(
+        {
+          baseUrl: config.ROUTER_SCRAPE_URL,
+          kind: config.ROUTER_SCRAPE_KIND,
+          username: config.ROUTER_SCRAPE_USER,
+          password: config.ROUTER_SCRAPE_PASSWORD,
+          insecureTls: true,
+        },
+        logger,
+      ),
+    );
+    logger.info({ url: config.ROUTER_SCRAPE_URL, kind: config.ROUTER_SCRAPE_KIND }, 'router HTTP scrape enabled');
+  }
+  if (config.FRITZBOX_URL) {
+    leaseSources.push(
+      new FritzBoxHttpAdapter(
+        {
+          baseUrl: config.FRITZBOX_URL,
+          username: config.FRITZBOX_USER,
+          password: config.FRITZBOX_PASSWORD,
+          insecureTls: true,
+        },
+        logger,
+      ),
+    );
+    logger.info({ url: config.FRITZBOX_URL }, 'Fritz!Box lease integration enabled');
+  }
+  let leaseSource: IRouterLeaseSource | undefined;
+  if (leaseSources.length === 1) leaseSource = leaseSources[0];
+  else if (leaseSources.length > 1) leaseSource = new CompositeLeaseSource(leaseSources, logger);
 
-  let fingerbank: IDeviceFingerprintResolver | undefined;
+  let fingerbank: FingerbankClient | undefined;
   if (config.FINGERBANK_API_KEY) {
     fingerbank = new FingerbankClient(config.FINGERBANK_API_KEY, logger);
     logger.info('Fingerbank device identification enabled');
@@ -282,6 +390,7 @@ export async function buildContainer(): Promise<Container> {
     fingerbank,
     passiveStore,
     snmp,
+    connectionSource,
   });
 
   let passiveListeners: PassiveListeners | undefined;
@@ -292,6 +401,11 @@ export async function buildContainer(): Promise<Container> {
       runner,
       iface: primaryIface?.name ?? 'en0',
       lldpEnabled: config.LLDP_PASSIVE_ENABLED && capabilities.elevated,
+      lldpStream: config.LLDP_STREAM_ENABLED,
+      dnsEnabled: config.PASSIVE_DNS_ENABLED,
+      igmpEnabled: config.PASSIVE_IGMP_ENABLED,
+      dhcpv6Enabled: config.PASSIVE_DHCPV6_ENABLED,
+      elevated: capabilities.elevated,
     });
   }
 
@@ -308,6 +422,7 @@ export async function buildContainer(): Promise<Container> {
     fingerbank,
     passiveStore,
     snmp,
+    connectionSource,
     classify,
     upsert,
     repo,
@@ -355,10 +470,13 @@ export async function buildContainer(): Promise<Container> {
     passiveListeners,
     backgroundWorker,
     snmp,
+    fingerbank,
+    connectionSource,
     logBuffer,
     runtimeSettings: null as unknown as RuntimeSettingsService,
     agentLogPath,
     detectPrimaryCidr,
+    listScanCidrs: () => listScanCidrs(config.SCAN_CIDRS),
     listInterfaces: listLocalInterfaces,
   };
   container.runtimeSettings = createRuntimeSettings(container, configPath);

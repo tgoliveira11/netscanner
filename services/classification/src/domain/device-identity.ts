@@ -40,6 +40,8 @@ export function resolveBrandModel(
   if (fbName) model = fbName;
   if (!brand && upnpMfr) brand = normalizeBrandName(upnpMfr);
   if (!model && upnpModel) model = upnpModel;
+  const mdnsModel = readSignal(signals, 'mdnsModel') || readSignal(signals, 'mdnsAppleModel');
+  if (!model && mdnsModel) model = mdnsModel;
   const snmpDescr = readSignal(signals, 'snmpSysDescr');
   if (!model && snmpDescr) {
     const m = /^([^\s,]+)/.exec(snmpDescr)?.[1];
@@ -92,6 +94,7 @@ export function resolveOs(
   const fbText = [fbName, fbPath].filter(Boolean).join(' ');
   const dhcpVendor = readSignal(signals, 'dhcpVendorClass');
   const mdnsType = readSignal(signals, 'mdnsType');
+  const mdnsOsVer = readSignal(signals, 'mdnsOsVersion');
   const host = hostname ?? '';
   const fbScore = signals['fingerbankScore'];
   const fbAcc = typeof fbScore === 'number' ? Math.min(92, fbScore) : 78;
@@ -123,7 +126,7 @@ export function resolveOs(
     });
   } else if (/macbook|imac|mac ?os|macos/i.test(fbText)) {
     add({
-      os: { family: 'macOS', name: 'macOS', version: fbVersion || undefined, accuracy: fbAcc, source: 'inferred' },
+      os: { family: 'macOS', name: 'macOS', version: fbVersion || mdnsOsVer || undefined, accuracy: fbAcc, source: 'inferred' },
       reason: `Fingerbank OS: ${fbName || fbPath}`,
     });
   } else if (/android/i.test(fbText)) {
@@ -198,6 +201,12 @@ export function resolveOs(
     add({
       os: { family: 'tvOS', name: 'tvOS', accuracy: 50, source: 'inferred' },
       reason: 'HomeKit mDNS (Apple hub/accessory)',
+    });
+  }
+  if (mdnsOsVer && isApple && !os?.version) {
+    add({
+      os: { family: 'macOS', name: 'macOS', version: mdnsOsVer, accuracy: 70, source: 'inferred' },
+      reason: `mDNS osxvers=${mdnsOsVer}`,
     });
   }
 

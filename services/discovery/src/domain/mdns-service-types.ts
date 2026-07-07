@@ -26,4 +26,8 @@ export const MDNS_SERVICE_TYPES = [
   'sftp-ssh',
   'nfs',
   'plex',
+  'hue',
+  'tuya',
+  'esphomelib',
+  'matter',
 ] as const;

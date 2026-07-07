@@ -7,6 +7,7 @@ export interface ConnectionEvidence {
   isGateway: boolean;
   /** Set by a definitive source (switch FDB / AP association) when available. */
   authoritative?: ConnectionType | null;
+  authoritativeBasis?: string | null;
 }
 
 export interface ConnectionInference {
@@ -35,7 +36,10 @@ const LIKELY_WIFI_TYPES = new Set<DeviceType>(['smart-home', 'iot', 'tv', 'strea
  */
 export function inferConnection(e: ConnectionEvidence): ConnectionInference {
   if (e.authoritative) {
-    return { type: e.authoritative, basis: 'reported by switch/AP (authoritative)' };
+    return {
+      type: e.authoritative,
+      basis: e.authoritativeBasis ?? 'reported by switch/AP (authoritative)',
+    };
   }
   if (e.isGateway || WIRED_TYPES.has(e.deviceType)) {
     return { type: 'wired', basis: 'infrastructure device (virtually always cabled)' };

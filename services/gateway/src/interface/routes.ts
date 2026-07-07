@@ -32,7 +32,11 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
   });
 
   app.get('/api/network/interfaces', async () => {
-    return { interfaces: c.listInterfaces(), primaryCidr: c.detectPrimaryCidr() };
+    return {
+      interfaces: c.listInterfaces(),
+      primaryCidr: c.detectPrimaryCidr(),
+      scanCidrs: c.listScanCidrs(),
+    };
   });
 
   // Diagnostic endpoint: verify the pfSense integration and preview its leases.
@@ -81,7 +85,15 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
       scanEnabled: c.config.BACKGROUND_SCAN_ENABLED,
       passiveListeners: c.config.PASSIVE_LISTENERS_ENABLED,
       lldpPassive: c.config.LLDP_PASSIVE_ENABLED,
+      lldpStream: c.config.LLDP_STREAM_ENABLED,
+      dnsPassive: c.config.PASSIVE_DNS_ENABLED,
+      igmpPassive: c.config.PASSIVE_IGMP_ENABLED,
+      dhcpv6Passive: c.config.PASSIVE_DHCPV6_ENABLED,
       snmpEnabled: c.config.SNMP_ENABLED,
+      snmpSwitch: c.config.SNMP_SWITCH_HOST ?? null,
+      scanCidrs: c.listScanCidrs(),
+      adaptiveScan: c.config.ADAPTIVE_SCAN_ENABLED,
+      masscan: c.config.MASSCAN_ENABLED,
       dhcpSniffer: Boolean(c.dhcpSource),
       dhcpListening: c.dhcpSource?.isListening() ?? false,
       dhcpMode: c.dhcpSource?.mode() ?? null,
