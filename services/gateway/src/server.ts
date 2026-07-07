@@ -8,6 +8,22 @@ import type { Container } from './container.js';
 import { registerRoutes } from './interface/routes.js';
 import { attachSocket } from './interface/socket.js';
 
+/** Map a browser path to an exported HTML file (Next static export uses flat `admin.html`). */
+function resolveStaticHtml(webOut: string, url: string): string {
+  const pathname = url.split('?')[0]?.split('#')[0] ?? '/';
+  const normalized = pathname.endsWith('/') && pathname.length > 1 ? pathname.slice(0, -1) : pathname;
+  if (normalized === '/' || normalized === '') return 'index.html';
+
+  const segment = normalized.slice(1).replace(/\//g, path.sep);
+  const flatHtml = path.join(webOut, `${segment}.html`);
+  if (existsSync(flatHtml)) return `${segment}.html`;
+
+  const indexHtml = path.join(webOut, segment, 'index.html');
+  if (existsSync(indexHtml)) return path.join(segment, 'index.html').replace(/\\/g, '/');
+
+  return 'index.html';
+}
+
 /** Locate the exported dashboard (apps/web/out) built with BUILD_STATIC=1. */
 function findWebOut(): string | null {
   let dir = path.dirname(fileURLToPath(import.meta.url));
@@ -59,7 +75,8 @@ export async function buildServer(c: Container) {
       if (request.url.startsWith('/api') || request.url.startsWith('/socket.io')) {
         return reply.code(404).send({ error: 'not found' });
       }
-      return reply.sendFile('index.html'); // SPA fallback
+      const file = resolveStaticHtml(webOut, request.url);
+      return reply.sendFile(file);
     });
     c.logger.info({ webOut }, 'serving bundled dashboard');
   } else {

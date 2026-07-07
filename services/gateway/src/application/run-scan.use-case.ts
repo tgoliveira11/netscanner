@@ -1,5 +1,6 @@
 import { Cidr, IpAddress, isOk } from '@netscanner/kernel';
 import { reverseDns } from '@netscanner/os-abstraction';
+import type { AppConfig } from '@netscanner/config';
 import type { IEventPublisher, ScanType } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
 import {
@@ -39,8 +40,7 @@ export interface RunScanDeps {
   sessions: ScanSessionStore;
   events: IEventPublisher;
   logger: Logger;
-  concurrency: number;
-  discoveryTimeoutMs: number;
+  config: AppConfig;
   elevated: boolean;
 }
 
@@ -87,8 +87,8 @@ export class RunScanUseCase {
       const discoveredIps = new Set<string>();
       const hosts = await this.deps.discover.execute({
         cidr,
-        concurrency: this.deps.concurrency,
-        timeoutMs: this.deps.discoveryTimeoutMs,
+        concurrency: this.deps.config.SCAN_CONCURRENCY,
+        timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
         onHost: (host) => {
           discoveredIps.add(host.ip);
           const s = this.progress(scanId, { hostsDiscovered: discoveredIps.size });
@@ -105,7 +105,7 @@ export class RunScanUseCase {
       if (s) events.emit({ type: 'scan.progress', payload: s });
 
       const seenIds: string[] = [];
-      await mapPool(hosts, this.deps.concurrency, async (host) => {
+      await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
         const fp = await this.deps.fingerprint.execute({
           ip: host.ip,
           depth: DEPTH_BY_TYPE[scanType],
@@ -301,8 +301,8 @@ export class RunScanUseCase {
 
       const hosts = await discover.execute({
         cidr,
-        concurrency: this.deps.concurrency,
-        timeoutMs: this.deps.discoveryTimeoutMs,
+        concurrency: this.deps.config.SCAN_CONCURRENCY,
+        timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
       });
 
       this.progress(scanId, {
@@ -312,7 +312,7 @@ export class RunScanUseCase {
       });
 
       const seenIds: string[] = [];
-      await mapPool(hosts, this.deps.concurrency, async (host) => {
+      await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
         const existing =
           (host.mac ? await this.deps.repo.findByMac(host.mac) : null) ??
           (await this.deps.repo.findByIp(host.ip));

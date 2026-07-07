@@ -9,7 +9,7 @@ const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ['@netscanner/contracts'],
   ...(isStatic
-    ? { output: 'export', images: { unoptimized: true } }
+    ? { output: 'export', trailingSlash: true, images: { unoptimized: true } }
     : {
         async rewrites() {
           const api = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
