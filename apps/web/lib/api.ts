@@ -55,7 +55,7 @@ export const api = {
     }).then((r) => json<AdminConfigPatchResponse>(r)),
 
   agentRestart: () =>
-    fetch('/api/agent/restart', { method: 'POST' }).then((r) => json<{ ok: boolean; restarting: boolean }>(r)),
+    fetch('/api/admin/restart', { method: 'POST' }).then((r) => json<{ ok: boolean; restarting: boolean }>(r)),
 };
 
 export interface ConfigFieldSchema {
