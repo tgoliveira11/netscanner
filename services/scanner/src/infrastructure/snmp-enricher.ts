@@ -1,65 +1,59 @@
 import type { ICommandRunner } from '@netscanner/os-abstraction';
 import type { Logger } from '@netscanner/logger';
+import type { SnmpV3Config } from './snmp-client.js';
+import { SnmpClient } from './snmp-client.js';
 
 export interface SnmpResult {
   sysDescr: string | null;
   sysName: string | null;
+  hrSystemUptime: string | null;
+  hrDeviceStatus: string | null;
+  prtGeneralPrinterName: string | null;
 }
 
 /**
- * Best-effort SNMP v2c sysDescr/sysName via snmpget when installed on the host.
+ * SNMP v2c enrichment: sysDescr/sysName, HOST-RESOURCES, printer MIB.
+ * Tries multiple communities when configured.
  */
 export class SnmpEnricher {
-  private community: string;
-  private enabled: boolean;
+  private client: SnmpClient;
 
   constructor(
-    private readonly runner: ICommandRunner,
-    private readonly logger: Logger,
-    community: string,
+    runner: ICommandRunner,
+    logger: Logger,
+    community: string | string[],
     enabled: boolean,
+    v3: SnmpV3Config | null = null,
   ) {
-    this.community = community;
-    this.enabled = enabled;
+    this.client = new SnmpClient(runner, logger, community, enabled, v3);
   }
 
-  setOptions(opts: { enabled?: boolean; community?: string }): void {
-    if (opts.enabled !== undefined) this.enabled = opts.enabled;
-    if (opts.community !== undefined) this.community = opts.community;
+  setOptions(opts: { enabled?: boolean; community?: string | string[]; v3?: SnmpV3Config | null }): void {
+    if (opts.enabled !== undefined) this.client.setEnabled(opts.enabled);
+    if (opts.community !== undefined) this.client.setCommunities(opts.community);
+    if (opts.v3 !== undefined) this.client.setV3(opts.v3);
   }
 
   async query(ip: string): Promise<SnmpResult | null> {
-    if (!this.enabled) return null;
-    const has = await this.runner.which('snmpget');
-    if (!has) return null;
+    const lines = await this.client.get(ip, [
+      'SNMPv2-MIB::sysDescr.0',
+      'SNMPv2-MIB::sysName.0',
+      'HOST-RESOURCES-MIB::hrSystemUptime.0',
+      'HOST-RESOURCES-MIB::hrDeviceStatus.1',
+      'SNMPv2-MIB::sysObjectID.0',
+    ]);
+    if (!lines?.length) return null;
 
-    const res = await this.runner.run(
-      'snmpget',
-      [
-        '-v2c',
-        '-c',
-        this.community,
-        '-Oqv',
-        '-t',
-        '2',
-        ip,
-        'SNMPv2-MIB::sysDescr.0',
-        'SNMPv2-MIB::sysName.0',
-      ],
-      { timeoutMs: 4000 },
-    );
-    if (res.code !== 0 || !res.stdout.trim()) return null;
-
-    const lines = res.stdout
-      .trim()
-      .split('\n')
-      .map((l) => l.replace(/^"(.*)"$/, '$1').trim())
-      .filter(Boolean);
-    if (!lines.length) return null;
+    let prtName: string | null = null;
+    const prt = await this.client.get(ip, ['PRINT-MIB::prtGeneralPrinterName.1']);
+    if (prt?.[0]) prtName = prt[0];
 
     return {
       sysDescr: lines[0] ?? null,
       sysName: lines[1] ?? lines[0] ?? null,
+      hrSystemUptime: lines[2] ?? null,
+      hrDeviceStatus: lines[3] ?? null,
+      prtGeneralPrinterName: prtName,
     };
   }
 
@@ -67,6 +61,9 @@ export class SnmpEnricher {
     return {
       snmpSysDescr: result.sysDescr,
       snmpSysName: result.sysName,
+      snmpHrUptime: result.hrSystemUptime,
+      snmpHrDeviceStatus: result.hrDeviceStatus,
+      snmpPrinterName: result.prtGeneralPrinterName,
     };
   }
 }

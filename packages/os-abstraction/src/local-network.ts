@@ -53,3 +53,24 @@ export function detectPrimaryCidr(): string | null {
     ) ?? ifaces[0]!;
   return preferred.cidr;
 }
+
+/** All CIDRs to scan: primary + other local interfaces + optional SCAN_CIDRS. */
+export function listScanCidrs(extraCsv = process.env.SCAN_CIDRS ?? ''): string[] {
+  const out = new Set<string>();
+  const primary = detectPrimaryCidr();
+  if (primary) out.add(primary);
+
+  for (const iface of listLocalInterfaces()) {
+    if (/(vmnet|docker|veth|utun|lo)/i.test(iface.name)) continue;
+    out.add(iface.cidr);
+  }
+
+  for (const raw of extraCsv.split(',')) {
+    const c = raw.trim();
+    if (!c) continue;
+    const parsed = Cidr.create(c);
+    if (isOk(parsed)) out.add(parsed.value.toString());
+  }
+
+  return [...out];
+}

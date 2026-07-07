@@ -20,16 +20,25 @@ export class FingerbankClient implements IDeviceFingerprintResolver {
   private readonly cache = new Map<string, FingerprintResult | null>();
 
   constructor(
-    private readonly apiKey: string,
+    private apiKey: string,
     private readonly logger: Logger,
     private readonly timeoutMs = 4000,
     /** Discard matches below this Fingerbank score to avoid weak guesses. */
     private readonly minScore = 30,
   ) {}
 
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
+    this.cache.clear();
+  }
+
   async resolve(query: FingerprintQuery): Promise<FingerprintResult | null> {
-    // Need at least a fingerprint or a MAC to say anything useful.
-    if (!query.dhcpFingerprint && !query.mac) return null;
+    const hasSignal =
+      query.dhcpFingerprint ||
+      query.dhcpv6Fingerprint ||
+      query.mac ||
+      (query.userAgents && query.userAgents.length > 0);
+    if (!hasSignal) return null;
     const key = JSON.stringify(query);
     if (this.cache.has(key)) return this.cache.get(key) ?? null;
 
@@ -39,11 +48,13 @@ export class FingerbankClient implements IDeviceFingerprintResolver {
   }
 
   private async query(query: FingerprintQuery): Promise<FingerprintResult | null> {
-    const body: Record<string, string> = {};
+    const body: Record<string, unknown> = {};
     if (query.dhcpFingerprint) body['dhcp_fingerprint'] = query.dhcpFingerprint;
     if (query.dhcpVendor) body['dhcp_vendor'] = query.dhcpVendor;
+    if (query.dhcpv6Fingerprint) body['dhcpv6_fingerprint'] = query.dhcpv6Fingerprint;
     if (query.mac) body['mac'] = query.mac;
     if (query.hostname) body['hostname'] = query.hostname;
+    if (query.userAgents?.length) body['user_agents'] = query.userAgents;
 
     try {
       const controller = new AbortController();

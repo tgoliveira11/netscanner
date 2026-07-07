@@ -33,10 +33,22 @@ export class NmapScanner implements IDeepScanner {
     else args.push('--top-ports', '1000');
     if (target.osDetection && this.options.elevated) args.push('-O', '--osscan-guess');
     if (target.depth !== 'quick') {
-      args.push(
-        '--script',
-        'banner,http-title,http-server-header,ssl-cert,upnp-info,smb-os-discovery,ssh-hostkey,nbstat',
-      );
+      const scripts = [
+        'banner',
+        'http-title',
+        'http-server-header',
+        'http-enum',
+        'ssl-cert',
+        'ssl-ja3',
+        'upnp-info',
+        'smb-os-discovery',
+        'smb2-security-mode',
+        'smb-protocols',
+        'ssh-hostkey',
+        'nbstat',
+      ];
+      if (target.depth === 'deep') scripts.push('rpc-grind', 'ws-discovery');
+      args.push('--script', scripts.join(','));
     }
     args.push('--host-timeout', `${Math.round(target.timeoutMs / 1000)}s`, target.ip);
     return args;

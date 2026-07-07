@@ -2,6 +2,7 @@ import { Cidr, isOk } from '@netscanner/kernel';
 import type { AppConfig } from '@netscanner/config';
 import type { IEventPublisher } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
+import { listScanCidrs } from '@netscanner/os-abstraction';
 import type { DhcpFingerprint, DiscoverHostsUseCase, IPassiveSignalStore } from '@netscanner/discovery';
 import type { IDeviceRepository } from '@netscanner/inventory';
 import type { DeviceEnrichmentService } from './device-enrichment.service.js';
@@ -90,6 +91,12 @@ export class BackgroundWorker {
     if (ip.startsWith('lldp:')) return;
     const device = await this.deps.repo.findByIp(ip);
     if (!device) return;
+    if (
+      !this.deps.enrichment.needsPassiveEnrichment(device) &&
+      !this.deps.enrichment.needsEnrichment(device)
+    ) {
+      return;
+    }
     await this.enrichOne(device.id, BACKGROUND_ENRICH_SCAN_ID);
   }
 
@@ -141,15 +148,17 @@ export class BackgroundWorker {
   private async runLightScan(): Promise<void> {
     if (this.scanRunning || this.deps.sessions.activeScan()) return;
 
-    const cidrRaw = this.deps.detectPrimaryCidr();
-    if (!cidrRaw) return;
-    const cidr = Cidr.create(cidrRaw);
-    if (!isOk(cidr)) return;
+    const cidrs = listScanCidrs(this.deps.config.SCAN_CIDRS);
+    if (!cidrs.length) return;
 
     this.scanRunning = true;
     const scanId = BACKGROUND_LIGHT_SCAN_ID;
     try {
-      await this.deps.runScan.executeLight(scanId, cidr.value);
+      for (const cidrRaw of cidrs) {
+        const cidr = Cidr.create(cidrRaw);
+        if (!isOk(cidr)) continue;
+        await this.deps.runScan.executeLight(scanId, cidr.value);
+      }
     } catch (error) {
       this.deps.logger.warn(
         { error: error instanceof Error ? error.message : error },
