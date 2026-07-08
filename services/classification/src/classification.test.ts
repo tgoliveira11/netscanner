@@ -62,7 +62,7 @@ describe('ClassifyDeviceUseCase', () => {
 
   it('infers a phone/laptop from a randomized (locally-administered) MAC instead of unknown', () => {
     const result = build().execute({
-      ip: '10.0.51.102',
+      ip: '10.0.1.102',
       mac: 'be:06:60:32:27:c6', // 2nd bit of first octet set → randomized
       hostname: null,
       os: null,
@@ -76,7 +76,7 @@ describe('ClassifyDeviceUseCase', () => {
 
   it('a detected desktop OS (macOS) beats the randomized-MAC phone lean → laptop', () => {
     const result = build().execute({
-      ip: '10.0.51.103',
+      ip: '10.0.1.103',
       mac: 'be:06:60:32:27:c6', // randomized → would otherwise lean "phone"
       hostname: null,
       os: { name: 'Apple macOS 26.1', family: 'macOS', accuracy: 95 },
@@ -89,7 +89,7 @@ describe('ClassifyDeviceUseCase', () => {
 
   it('classifies an iOS host as a phone', () => {
     const result = build().execute({
-      ip: '10.0.51.90',
+      ip: '10.0.1.90',
       mac: null,
       hostname: null,
       os: { name: 'Apple iPhone OS 17', family: 'iOS', accuracy: 92 },
@@ -102,7 +102,7 @@ describe('ClassifyDeviceUseCase', () => {
 
   it('identifies a NAS from a UPnP/HTTP banner even without a useful MAC', () => {
     const result = build().execute({
-      ip: '10.0.51.50',
+      ip: '10.0.1.50',
       mac: null,
       hostname: null,
       os: null,
@@ -133,7 +133,7 @@ describe('ClassifyDeviceUseCase', () => {
     const result = build().execute({
       ip: '192.168.1.61',
       mac: null,
-      hostname: 'Marias-MacBook',
+      hostname: 'Example-MacBook',
       os: { name: 'Apple macOS 26.1', family: 'macOS', accuracy: 95, source: 'nmap' },
       vendorFromScan: null,
       services: [{ port: 22, protocol: 'tcp', state: 'open', banner: 'OpenSSH Ubuntu' }],
@@ -145,7 +145,7 @@ describe('ClassifyDeviceUseCase', () => {
 
   it('distinguishes an Apple Watch from an iPhone via the DHCP hostname', () => {
     const watch = build().execute({
-      ip: '10.0.51.104',
+      ip: '10.0.1.104',
       mac: '4e:01:07:00:00:02',
       hostname: 'watch',
       os: null,
@@ -157,9 +157,9 @@ describe('ClassifyDeviceUseCase', () => {
     expect(watch.os?.name).toMatch(/watchos/i); // OS inferred from hostname
 
     const phone = build().execute({
-      ip: '10.0.51.100',
-      mac: '44:f2:1b:00:00:01',
-      hostname: 'sample-iphone',
+      ip: '10.0.1.100',
+      mac: 'aa:bb:cc:11:22:33',
+      hostname: 'users-iphone',
       os: null,
       vendorFromScan: null,
       services: [],
@@ -171,7 +171,7 @@ describe('ClassifyDeviceUseCase', () => {
 
   it('lets a Fingerbank match (from the DHCP fingerprint) win — Apple Watch vs iPhone', () => {
     const watch = build().execute({
-      ip: '10.0.51.104',
+      ip: '10.0.1.104',
       mac: '4e:01:07:00:00:02',
       hostname: null,
       os: null,
@@ -182,7 +182,7 @@ describe('ClassifyDeviceUseCase', () => {
     expect(watch.deviceType).toBe('wearable');
 
     const phone = build().execute({
-      ip: '10.0.51.100',
+      ip: '10.0.1.100',
       mac: null,
       hostname: null,
       os: null,

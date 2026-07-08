@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import { io, type Socket } from 'socket.io-client';
 import type { Device, DomainEvent, ScanSession } from '@netscanner/contracts';
-import { api } from './api';
+import { api, apiBase } from './api';
 
 export interface AlertItem {
   id: string;
@@ -18,7 +18,7 @@ interface StoreState {
   scan: ScanSession | null;
   alerts: AlertItem[];
   connected: boolean;
-  capabilities: { nmap: boolean; elevated: boolean } | null;
+  capabilities: { nmap: boolean; elevated: boolean; nmapOffReason?: 'disabled-by-config' | 'not-in-path' } | null;
   selectedId: string | null;
   bootstrap: () => Promise<void>;
   connect: () => void;
@@ -27,22 +27,7 @@ interface StoreState {
   clearAlerts: () => void;
 }
 
-/**
- * Resolve the agent API/WebSocket base URL:
- *  - explicit NEXT_PUBLIC_API_URL wins;
- *  - agent bundle: same-origin (dashboard served by the gateway on :4000);
- *  - split dev: the Next dev server is on :3000 while the API is on :4000.
- */
-function resolveApiUrl(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window === 'undefined') return 'http://localhost:4000';
-  if (window.location.port === '3000') {
-    return `${window.location.protocol}//${window.location.hostname}:4000`;
-  }
-  return window.location.origin;
-}
-
-const API_URL = resolveApiUrl();
+const API_URL = typeof window !== 'undefined' ? apiBase() : 'http://127.0.0.1:4000';
 let socket: Socket | null = null;
 
 export const useStore = create<StoreState>((set, get) => ({
@@ -54,16 +39,20 @@ export const useStore = create<StoreState>((set, get) => ({
   selectedId: null,
 
   bootstrap: async () => {
-    const [{ devices }, { scan }, health] = await Promise.all([
-      api.listDevices(),
-      api.latestScan(),
-      api.health().catch(() => null),
-    ]);
-    set({
-      devices: Object.fromEntries(devices.map((d) => [d.id, d])),
-      scan,
-      capabilities: health?.capabilities ?? null,
-    });
+    try {
+      const [{ devices }, { scan }, health] = await Promise.all([
+        api.listDevices(),
+        api.latestScan(),
+        api.health().catch(() => null),
+      ]);
+      set({
+        devices: Object.fromEntries(devices.map((d) => [d.id, d])),
+        scan,
+        capabilities: health?.capabilities ?? null,
+      });
+    } catch {
+      /* agent may be restarting */
+    }
   },
 
   connect: () => {

@@ -41,4 +41,8 @@ export class CompositeLeaseSource implements IRouterLeaseSource {
     }
     return [...byKey.values()];
   }
+
+  listSources(): readonly IRouterLeaseSource[] {
+    return this.sources;
+  }
 }

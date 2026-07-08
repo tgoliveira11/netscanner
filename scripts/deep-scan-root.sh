@@ -31,7 +31,7 @@ if [ -z "$CIDR" ]; then
   CIDR="$(curl -fsS http://127.0.0.1:4000/api/network/interfaces 2>/dev/null \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).primaryCidr||"")}catch{console.log("")}})')"
 fi
-[ -n "$CIDR" ] || { echo "não consegui detectar o CIDR — passe como argumento, ex.: ... $0 10.0.51.0/24"; exit 1; }
+[ -n "$CIDR" ] || { echo "não consegui detectar o CIDR — passe como argumento, ex.: ... $0 192.168.1.0/24"; exit 1; }
 
 echo "[deep] usuário: $REAL_USER | instalação: $NS | subnet: $CIDR"
 echo "[deep] subindo agente root em :$PORT (elevado → nmap -O)…"

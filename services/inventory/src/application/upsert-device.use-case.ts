@@ -1,6 +1,8 @@
 import { v4 as uuid } from 'uuid';
 import type { ConnectionType, Device, OsGuess, SecurityFlag, ServiceInfo } from '@netscanner/contracts';
 import type { IDeviceRepository } from '../domain/device-repository.js';
+import type { StoredDevice } from '../domain/device-public.js';
+import { toPublicDevice } from '../domain/device-public.js';
 import { diffDevice } from '../domain/device-diff.js';
 
 /** Prefer the higher-confidence OS but keep version from either source. */
@@ -58,52 +60,52 @@ export class UpsertDeviceUseCase {
     const existing =
       (snapshot.mac ? await this.repo.findByMac(snapshot.mac) : null) ??
       (await this.repo.findByIp(snapshot.ip));
+    const stored = existing ? await this.repo.findStoredById(existing.id) : null;
 
-    if (!existing) {
+    if (!stored) {
       const device: Device = {
         id: uuid(),
         ...this.snapshotFields(snapshot),
         label: null,
         notes: null,
+        routerScrapeUser: null,
+        routerScrapePasswordSet: false,
         firstSeen: now,
         lastSeen: now,
         isOnline: true,
       };
       await this.repo.save(device);
-      return { device, isNew: true, changes: [] };
+      return { device: toPublicDevice(device as StoredDevice), isNew: true, changes: [] };
     }
 
     const fields = this.snapshotFields(snapshot);
-    // Keep the more confident classification so a flaky rescan can't downgrade a
-    // well-identified device back to "unknown"/low confidence.
     const keepClass =
-      existing.deviceType !== 'unknown' &&
-      existing.classificationConfidence >= fields.classificationConfidence;
-    const next: Device = {
-      ...existing,
+      stored.deviceType !== 'unknown' &&
+      stored.classificationConfidence >= fields.classificationConfidence;
+    const next: StoredDevice = {
+      ...stored,
       ...fields,
-      // Enrichment is sticky: never overwrite good data with null when a later
-      // scan fails to re-detect it (OS detection especially is probabilistic).
-      os: mergeOs(fields.os, existing.os),
-      hostname: fields.hostname ?? existing.hostname,
-      vendor: fields.vendor ?? existing.vendor,
-      brand: fields.brand ?? existing.brand,
-      model: fields.model ?? existing.model,
-      deviceType: keepClass ? existing.deviceType : fields.deviceType,
+      os: mergeOs(fields.os, stored.os),
+      hostname: fields.hostname ?? stored.hostname,
+      vendor: fields.vendor ?? stored.vendor,
+      brand: fields.brand ?? stored.brand,
+      model: fields.model ?? stored.model,
+      deviceType: keepClass ? stored.deviceType : fields.deviceType,
       classificationConfidence: keepClass
-        ? existing.classificationConfidence
+        ? stored.classificationConfidence
         : fields.classificationConfidence,
-      // Preserve identity and user-owned fields.
-      id: existing.id,
-      firstSeen: existing.firstSeen,
-      label: existing.label,
-      notes: existing.notes,
+      id: stored.id,
+      firstSeen: stored.firstSeen,
+      label: stored.label,
+      notes: stored.notes,
+      routerScrapeUser: stored.routerScrapeUser ?? null,
+      routerScrapePassword: stored.routerScrapePassword ?? null,
       lastSeen: now,
       isOnline: true,
     };
-    const changes = diffDevice(existing, next);
+    const changes = diffDevice(stored, next);
     await this.repo.save(next);
-    return { device: next, isNew: false, changes };
+    return { device: toPublicDevice(next), isNew: false, changes };
   }
 
   private snapshotFields(s: DeviceSnapshot) {

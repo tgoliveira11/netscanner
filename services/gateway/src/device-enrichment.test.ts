@@ -20,6 +20,7 @@ const baseDevice = (over: Partial<Device> = {}): Device => ({
   securityFlags: [],
   label: null,
   notes: null,
+  routerScrapePasswordSet: false,
   firstSeen: new Date().toISOString(),
   lastSeen: new Date().toISOString(),
   signals: {},

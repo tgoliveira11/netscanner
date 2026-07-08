@@ -1,14 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import {
-  api,
-  type AdminConfigResponse,
-  type AdminObservability,
-  type AdminLogLine,
-  type ConfigFieldSchema,
-} from '../../lib/api';
+import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type AdminWirelessResponse, type ConfigFieldSchema } from '../../lib/api';
 
 function LogViewer({ lines }: { lines: AdminLogLine[] }) {
   return (
@@ -98,22 +92,43 @@ export default function AdminPage() {
   const [obs, setObs] = useState<AdminObservability | null>(null);
   const [config, setConfig] = useState<AdminConfigResponse | null>(null);
   const [logs, setLogs] = useState<AdminLogLine[]>([]);
+  const [wireless, setWireless] = useState<AdminWirelessResponse | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const restartingRef = useRef(false);
 
-  const refresh = useCallback(async () => {
+  const refreshWireless = useCallback(async () => {
     try {
-      const [o, c, l] = await Promise.all([api.adminObservability(), api.adminConfig(), api.adminLogs(250)]);
+      setWireless(await api.adminWireless());
+    } catch {
+      /* wireless probe is slow — don't block the rest of admin */
+    }
+  }, []);
+
+  const refresh = useCallback(async (opts?: { skipWireless?: boolean }) => {
+    try {
+      const [o, c, l] = await Promise.all([
+        api.adminObservability(),
+        api.adminConfig(),
+        api.adminLogs(250),
+      ]);
       setObs(o);
       setConfig(c);
       setLogs([...l.memory, ...l.file].slice(-300));
       setError(null);
+      if (!opts?.skipWireless) void refreshWireless();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load admin data');
+      if (restartingRef.current) return;
+      const msg = e instanceof Error ? e.message : 'Failed to load admin data';
+      if (msg === 'Failed to fetch') {
+        setError('Agent indisponível — verifique se está rodando em http://127.0.0.1:4000');
+      } else {
+        setError(msg);
+      }
     }
-  }, []);
+  }, [refreshWireless]);
 
   useEffect(() => {
     void refresh();
@@ -166,11 +181,20 @@ export default function AdminPage() {
   };
 
   const restart = async () => {
+    setError(null);
+    setMessage('Reiniciando agente…');
+    restartingRef.current = true;
     try {
       await api.agentRestart();
-      setMessage('Restart requested — agent will come back in a few seconds.');
+      setMessage('Agente reiniciado.');
+      await refresh({ skipWireless: true });
+      void refreshWireless();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Restart failed');
+      setMessage(null);
+      const msg = e instanceof Error ? e.message : 'Restart failed';
+      setError(msg === 'Failed to fetch' ? 'Não foi possível contactar o agente durante o restart.' : msg);
+    } finally {
+      restartingRef.current = false;
     }
   };
 
@@ -212,7 +236,18 @@ export default function AdminPage() {
             <StatusCard label="Uptime" value={`${obs.uptimeSec}s · pid ${obs.pid}`} />
             <StatusCard label="Devices" value={obs.inventory.deviceCount} />
             <StatusCard label="Primary CIDR" value={obs.primaryCidr ?? '—'} />
-            <StatusCard label="nmap" value={obs.capabilities.nmap ? 'yes' : 'no'} />
+            <StatusCard
+              label="nmap"
+              value={
+                obs.capabilities.nmap
+                  ? 'yes'
+                  : obs.capabilities.nmapOffReason === 'disabled-by-config'
+                    ? 'no (DISABLE_NMAP)'
+                    : obs.capabilities.nmapOffReason === 'not-in-path'
+                      ? 'no (not in PATH)'
+                      : 'no'
+              }
+            />
             <StatusCard label="Elevated" value={obs.capabilities.elevated ? 'yes' : 'no'} />
             <StatusCard label="DHCP sniffer" value={String(bg?.dhcpListening ?? false)} />
             <StatusCard label="DHCP mode" value={String(bg?.dhcpMode ?? '—')} />
@@ -227,6 +262,38 @@ export default function AdminPage() {
                   : 'none'
               }
             />
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-slate-200">WiFi / SSIDs (OpenWrt scrape targets)</h2>
+        {!wireless?.configured && (
+          <p className="text-xs text-muted">Configure ROUTER_SCRAPE_TARGETS or ROUTER_SCRAPE_URL with kind=openwrt.</p>
+        )}
+        {wireless?.configured && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {wireless.routers.map((r) => (
+              <div key={r.url} className="rounded-lg border border-edge bg-panelup p-3">
+                <div className="text-sm font-medium text-slate-200">{r.host}</div>
+                <div className="text-xs text-muted">{r.url}</div>
+                {!r.ok && <div className="mt-1 text-xs text-bad">{r.error ?? 'probe failed'}</div>}
+                {r.ok && r.ssids.length === 0 && (
+                  <div className="mt-1 text-xs text-muted">No WiFi radios / SSIDs (switch or WiFi disabled)</div>
+                )}
+                {r.ok && r.ssids.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                    {r.ssids.map((s) => (
+                      <li key={`${s.device}-${s.ifname}`}>
+                        <span className={s.up ? 'text-good' : 'text-muted'}>{s.up ? '●' : '○'}</span>{' '}
+                        <span className="font-medium">{s.ssid || '(hidden)'}</span>
+                        <span className="text-muted"> · {s.device} ch={s.channel ?? '—'} {s.mode ?? ''}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </section>

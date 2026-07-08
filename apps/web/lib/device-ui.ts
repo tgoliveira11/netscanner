@@ -34,6 +34,20 @@ export function connectionGlyph(type: string): string {
   return type === 'wifi' ? '📶' : type === 'wired' ? '🔌' : '';
 }
 
+/** Topology node icon — wired routers omit the WiFi symbol. */
+export function topologyNodeIcon(role: string): string {
+  switch (role) {
+    case 'gateway':
+      return '🌐';
+    case 'wired-router':
+      return '🔀';
+    case 'wifi-ap':
+      return '📶';
+    default:
+      return DEVICE_META.unknown.icon;
+  }
+}
+
 export function confidenceColor(c: number): string {
   if (c >= 0.7) return 'text-good';
   if (c >= 0.4) return 'text-warn';

@@ -8,6 +8,9 @@ coverage/
 .env
 .env.local
 .agent-control-token
+# Local operator notes (may contain network layout); do not publish
+HANDOFF.md
+HANDOFF.local.md
 *.tsbuildinfo
 services/inventory/prisma/*.db
 services/inventory/prisma/*.db-journal
