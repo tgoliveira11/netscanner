@@ -14,6 +14,38 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard API unavailable — silently ignore
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      title={copied ? 'Copied!' : 'Copy MAC address'}
+      className="ml-1 inline-flex items-center rounded p-0.5 text-muted transition-colors hover:bg-panelup hover:text-slate-200"
+    >
+      {copied ? (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5 text-green-400">
+          <path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" />
+        </svg>
+      ) : (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+          <path d="M5.5 3.5A1.5 1.5 0 0 1 7 2h2a1.5 1.5 0 0 1 1.5 1.5v.5h1A1.5 1.5 0 0 1 13 5.5v8A1.5 1.5 0 0 1 11.5 15h-7A1.5 1.5 0 0 1 3 13.5v-8A1.5 1.5 0 0 1 4.5 4h1v-.5ZM7 3a.5.5 0 0 0-.5.5V4h3v-.5A.5.5 0 0 0 9 3H7Zm4.5 2.5h-7a.5.5 0 0 0-.5.5v8a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5v-8a.5.5 0 0 0-.5-.5Z" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function isRouterPanel(device: { deviceType: string; services: { port: number }[] }): boolean {
   if (['router', 'switch', 'access-point', 'firewall'].includes(device.deviceType)) return true;
   return device.services.some((s) => s.port === 80 || s.port === 443);
@@ -85,7 +117,19 @@ export function DeviceDrawer() {
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="IP" value={<span className="font-mono">{device.ip}</span>} />
-          <Field label="MAC" value={<span className="font-mono">{device.mac ?? '—'}</span>} />
+          <Field
+            label="MAC"
+            value={
+              device.mac ? (
+                <span className="flex items-center">
+                  <span className="font-mono">{device.mac}</span>
+                  <CopyButton text={device.mac} />
+                </span>
+              ) : (
+                '—'
+              )
+            }
+          />
           <Field label="Vendor" value={device.vendor} />
           <Field label="Brand" value={device.brand} />
           <Field label="Model" value={device.model} />

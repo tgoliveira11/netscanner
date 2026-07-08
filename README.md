@@ -24,6 +24,10 @@ Two honest limitations, surfaced in the UI:
 - Full nmap **OS detection** (`-O`) needs root/sudo. Without it, the engine falls
   back to service/banner heuristics. nmap itself is optional — a pure-Node
   TCP/ARP/mDNS/SSDP core always works and nmap **enriches** it when present.
+- **DHCP fingerprints** (option 55) are sniffed locally on the agent's L2
+  interfaces (`DHCP_SNIFF_IFACES` / `tcpdump -i any`). Routed VLANs that the Mac
+  cannot see at L2 (e.g. guest) need remote capture on the OpenWrt switch
+  `br-lan` (`SNMP_SWITCH_HOST` + SSH / `ROUTER_SCRAPE` password).
 
 ## Architecture
 

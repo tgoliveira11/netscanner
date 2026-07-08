@@ -41,6 +41,31 @@ export function listLocalInterfaces(): LocalInterface[] {
 }
 
 /**
+ * Interfaces unsuitable for local DHCP sniff (VM/containers/tunnels/loopback).
+ * Bridge interfaces (e.g. bridge100 for Internet Sharing) are kept so we can
+ * see DHCP on what the Mac actually receives on L2.
+ */
+export function isSniffableInterfaceName(name: string): boolean {
+  if (/^lo\d*$/i.test(name)) return false;
+  if (/(vmnet|docker|veth|utun)/i.test(name)) return false;
+  return true;
+}
+
+/**
+ * Unique local ifaces suitable for DHCP tcpdump fallback.
+ * Note: routed VLANs without L2 on this host still need remote capture
+ * (switch/gateway); this only covers what the machine can see locally.
+ */
+export function listSniffInterfaces(): LocalInterface[] {
+  const byName = new Map<string, LocalInterface>();
+  for (const iface of listLocalInterfaces()) {
+    if (!isSniffableInterfaceName(iface.name)) continue;
+    if (!byName.has(iface.name)) byName.set(iface.name, iface);
+  }
+  return [...byName.values()];
+}
+
+/**
  * Pick the primary local subnet to scan: prefer a private /24-ish network on a
  * non-virtual interface. Falls back to the first available interface.
  */
@@ -54,14 +79,27 @@ export function detectPrimaryCidr(): string | null {
   return preferred.cidr;
 }
 
+/**
+ * Subnets we never auto-scan: ISP handoff, Mac Internet Sharing, VPN overlays.
+ * Extra SCAN_CIDRS can still add them deliberately if the operator wants.
+ */
+export function isIgnoredScanCidr(cidr: string): boolean {
+  const network = cidr.split('/')[0] ?? cidr;
+  if (network.startsWith('192.168.0.')) return true;
+  if (network.startsWith('192.168.64.')) return true; // Mac Internet Sharing
+  if (network.startsWith('10.8.') || network.startsWith('10.14.')) return true;
+  return false;
+}
+
 /** All CIDRs to scan: primary + other local interfaces + optional SCAN_CIDRS. */
 export function listScanCidrs(extraCsv = process.env.SCAN_CIDRS ?? ''): string[] {
   const out = new Set<string>();
   const primary = detectPrimaryCidr();
-  if (primary) out.add(primary);
+  if (primary && !isIgnoredScanCidr(primary)) out.add(primary);
 
   for (const iface of listLocalInterfaces()) {
-    if (/(vmnet|docker|veth|utun|lo)/i.test(iface.name)) continue;
+    if (/(vmnet|docker|veth|utun|lo|bridge)/i.test(iface.name)) continue;
+    if (isIgnoredScanCidr(iface.cidr)) continue;
     out.add(iface.cidr);
   }
 

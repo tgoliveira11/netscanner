@@ -251,6 +251,18 @@ export default function AdminPage() {
             <StatusCard label="Elevated" value={obs.capabilities.elevated ? 'yes' : 'no'} />
             <StatusCard label="DHCP sniffer" value={String(bg?.dhcpListening ?? false)} />
             <StatusCard label="DHCP mode" value={String(bg?.dhcpMode ?? '—')} />
+            <StatusCard
+              label="DHCP ifaces"
+              value={
+                Array.isArray(bg?.dhcpSniffIfaces) && (bg.dhcpSniffIfaces as string[]).length
+                  ? (bg.dhcpSniffIfaces as string[]).join(', ')
+                  : '—'
+              }
+            />
+            <StatusCard
+              label="DHCP fingerprints"
+              value={`${bg?.dhcpInMemory ?? 0} live · ${bg?.dhcpPersisted ?? 0} stored`}
+            />
             <StatusCard label="Passive signals" value={String(bg?.passiveSignals ?? 0)} />
             <StatusCard label="Background scan" value={String(bg?.scanEnabled ?? false)} />
             <StatusCard label="Config file" value={<span className="break-all text-xs">{obs.configPath}</span>} />
@@ -303,15 +315,39 @@ export default function AdminPage() {
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="card p-4">
             <h3 className="mb-2 text-xs font-semibold uppercase text-muted">DHCP fingerprints</h3>
-            <pre className="max-h-48 overflow-auto text-[11px] text-slate-300">
-              {JSON.stringify(obs?.dhcpFingerprints ?? [], null, 2)}
-            </pre>
+            {!(obs?.dhcpFingerprints?.length) ? (
+              <div className="space-y-2 text-xs text-muted">
+                <p>
+                  None captured yet
+                  {bg?.dhcpListening
+                    ? ` — sniffer is listening (${String(bg?.dhcpMode ?? 'unknown')}).`
+                    : ' — sniffer is not listening.'}
+                </p>
+                <p>
+                  Fingerprints only appear after a client sends DHCP DISCOVER/REQUEST/INFORM on the wire
+                  (reconnect Ethernet / renew lease). Lease APIs do not include option 55.
+                </p>
+                {Array.isArray(bg?.dhcpSniffIfaces) && (bg.dhcpSniffIfaces as string[]).length > 0 && (
+                  <p className="font-mono text-[11px] text-slate-400">
+                    ifaces: {(bg.dhcpSniffIfaces as string[]).join(', ')}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <pre className="max-h-48 overflow-auto text-[11px] text-slate-300">
+                {JSON.stringify(obs.dhcpFingerprints, null, 2)}
+              </pre>
+            )}
           </div>
           <div className="card p-4">
             <h3 className="mb-2 text-xs font-semibold uppercase text-muted">Passive signals (sample)</h3>
-            <pre className="max-h-48 overflow-auto text-[11px] text-slate-300">
-              {JSON.stringify(obs?.passiveSample ?? [], null, 2)}
-            </pre>
+            {!(obs?.passiveSample?.length) ? (
+              <p className="text-xs text-muted">No passive signal samples yet.</p>
+            ) : (
+              <pre className="max-h-48 overflow-auto text-[11px] text-slate-300">
+                {JSON.stringify(obs.passiveSample, null, 2)}
+              </pre>
+            )}
           </div>
         </div>
       </section>

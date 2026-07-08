@@ -13,7 +13,12 @@ import {
 } from './dhcp-tcpdump-parser.js';
 
 export interface DhcpSnifferOptions {
-  /** Interface for tcpdump fallback when UDP :67 is busy (e.g. macOS Internet Sharing). */
+  /**
+   * Preferred list of interfaces for tcpdump fallback. Use `['any']` (or include
+   * `any` among several) for a single `tcpdump -i any` process on macOS/Linux.
+   */
+  ifaces?: string[];
+  /** @deprecated Prefer `ifaces`. Single interface for tcpdump fallback. */
   iface?: string;
   /** Persist each capture (SQLite, etc.). */
   persist?: (fp: DhcpFingerprint) => Promise<void>;
@@ -23,15 +28,28 @@ export interface DhcpSnifferOptions {
   onCaptured?: (fp: DhcpFingerprint) => void;
 }
 
+/** Resolve effective tcpdump iface list from options. */
+export function resolveDhcpSniffIfaces(options: Pick<DhcpSnifferOptions, 'ifaces' | 'iface'>): string[] {
+  if (options.ifaces?.length) {
+    return [...new Set(options.ifaces.map((i) => i.trim()).filter(Boolean))];
+  }
+  if (options.iface?.trim()) return [options.iface.trim()];
+  return ['en0'];
+}
+
 /**
  * Passive DHCP fingerprint sniffer. Prefers binding UDP :67; when that port is
  * taken (macOS Internet Sharing, another DHCP server), falls back to tcpdump on
- * the LAN interface — still fully passive, never transmits.
+ * local interfaces — still fully passive, never transmits.
+ *
+ * Routed VLANs without L2 on this host are invisible here; use RemoteDhcpSniffer
+ * on the switch/gateway bridge for those.
  */
 export class DhcpSniffer implements IDhcpFingerprintSource {
   private socket: Socket | null = null;
-  private tcpdumpProc: ChildProcess | null = null;
+  private tcpdumpProcs: ChildProcess[] = [];
   private captureMode: 'udp' | 'tcpdump' | null = null;
+  private listeningIfaces: string[] = [];
   private readonly cache = new Map<string, DhcpFingerprint>();
   private readonly capturedHandlers = new Set<(fp: DhcpFingerprint) => void>();
 
@@ -58,8 +76,8 @@ export class DhcpSniffer implements IDhcpFingerprintSource {
 
     if (await this.tryUdpBind()) return;
 
-    const iface = this.options.iface ?? 'en0';
-    if (this.startTcpdump(iface)) return;
+    const ifaces = resolveDhcpSniffIfaces(this.options);
+    if (this.startTcpdumpFallback(ifaces)) return;
 
     this.logger.warn('DHCP sniffer unavailable (UDP :67 busy and tcpdump failed to start)');
   }
@@ -92,21 +110,38 @@ export class DhcpSniffer implements IDhcpFingerprintSource {
         }
         this.socket = socket;
         this.captureMode = 'udp';
+        this.listeningIfaces = ['udp:67'];
         this.logger.info('DHCP fingerprint sniffer listening on UDP :67');
         finish(true);
       });
     });
   }
 
-  private startTcpdump(iface: string): boolean {
+  private startTcpdumpFallback(ifaces: string[]): boolean {
+    const useAny = ifaces.includes('any') || ifaces.length > 1;
+    const targets = useAny ? ['any'] : ifaces;
+    let started = 0;
+    for (const iface of targets) {
+      if (this.spawnTcpdump(iface)) started += 1;
+    }
+    if (started === 0) return false;
+    this.captureMode = 'tcpdump';
+    this.listeningIfaces = [...targets];
+    this.logger.info(
+      { ifaces: this.listeningIfaces, requested: ifaces },
+      'DHCP fingerprint sniffer listening via tcpdump',
+    );
+    return true;
+  }
+
+  private spawnTcpdump(iface: string): boolean {
     try {
       const proc = spawn(
         'tcpdump',
         ['-i', iface, '-n', '-l', '-s', '512', '-xx', 'udp', 'port', '67'],
         { stdio: ['ignore', 'pipe', 'pipe'] },
       );
-      this.tcpdumpProc = proc;
-      this.captureMode = 'tcpdump';
+      this.tcpdumpProcs.push(proc);
 
       let hexLines: string[] = [];
       const flush = () => {
@@ -131,26 +166,26 @@ export class DhcpSniffer implements IDhcpFingerprintSource {
       proc.stderr?.on('data', (chunk: Buffer) => {
         const msg = chunk.toString('utf8').trim();
         if (msg && !msg.includes('listening on')) {
-          this.logger.debug({ stderr: msg }, 'tcpdump dhcp');
+          this.logger.debug({ iface, stderr: msg }, 'tcpdump dhcp');
         }
       });
 
       proc.on('exit', (code, signal) => {
         flush();
-        if (this.tcpdumpProc === proc) {
-          this.tcpdumpProc = null;
-          if (this.captureMode === 'tcpdump') this.captureMode = null;
+        this.tcpdumpProcs = this.tcpdumpProcs.filter((p) => p !== proc);
+        if (this.tcpdumpProcs.length === 0 && this.captureMode === 'tcpdump') {
+          this.captureMode = null;
+          this.listeningIfaces = [];
         }
         if (code !== 0 && code !== null) {
-          this.logger.warn({ code, signal }, 'DHCP tcpdump exited');
+          this.logger.warn({ iface, code, signal }, 'DHCP tcpdump exited');
         }
       });
 
-      this.logger.info({ iface }, 'DHCP fingerprint sniffer listening via tcpdump');
       return true;
     } catch (error) {
       this.logger.warn(
-        { error: error instanceof Error ? error.message : error },
+        { iface, error: error instanceof Error ? error.message : error },
         'failed to start DHCP tcpdump fallback',
       );
       return false;
@@ -222,6 +257,11 @@ export class DhcpSniffer implements IDhcpFingerprintSource {
     return this.captureMode;
   }
 
+  /** Interfaces currently used for capture (udp:67 or tcpdump ifaces). */
+  sniffIfaces(): string[] {
+    return [...this.listeningIfaces];
+  }
+
   onCaptured(handler: (fp: DhcpFingerprint) => void): () => void {
     this.capturedHandlers.add(handler);
     return () => this.capturedHandlers.delete(handler);
@@ -234,14 +274,15 @@ export class DhcpSniffer implements IDhcpFingerprintSource {
       /* ignore */
     }
     this.socket = null;
-    if (this.tcpdumpProc) {
+    for (const proc of this.tcpdumpProcs) {
       try {
-        this.tcpdumpProc.kill('SIGTERM');
+        proc.kill('SIGTERM');
       } catch {
         /* ignore */
       }
-      this.tcpdumpProc = null;
     }
+    this.tcpdumpProcs = [];
     this.captureMode = null;
+    this.listeningIfaces = [];
   }
 }
