@@ -72,6 +72,38 @@ describe('dhcp tcpdump parser', () => {
     const payload = dhcpPayloadFromTcpdumpHex(lines);
     expect(parseDhcpPacket(payload!)?.fingerprint).toBe('1,3,6,15');
   });
+
+  it('parses OpenWrt/BusyBox tcpdump -xx (4-nibble groups)', () => {
+    const lines = [
+      '\t0x0000:  ffff ffff ffff be06 6032 27c6 8100 0033',
+      '\t0x0010:  0800 4500 0148 f404 0000 ff11 c6a0 0000',
+      '\t0x0020:  0000 ffff ffff 0044 0043 0134 5503 0101',
+      '\t0x0030:  0600 3057 658a 0000 0000 0000 0000 0000',
+      '\t0x0040:  0000 0000 0000 0000 0000 be06 6032 27c6',
+      '\t0x0050:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x0060:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x0070:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x0080:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x0090:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x00a0:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x00b0:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x00c0:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x00d0:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x00e0:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x00f0:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x0100:  0000 0000 0000 0000 0000 0000 0000 0000',
+      '\t0x0110:  0000 0000 0000 0000 0000 6382 5363 3501',
+      '\t0x0120:  0337 0a01 7903 060f 6c72 77a2 fc39 0205',
+      '\t0x0130:  dc3d 0701 be06 6032 27c6 3204 c0a8 3366',
+      '\t0x0140:  3304 0076 a700 0c05 5761 7463 68ff 0000',
+      '\t0x0150:  0000 0000 0000 0000 0000 0000 0000 0000',
+    ];
+    const payload = dhcpPayloadFromTcpdumpHex(lines);
+    const parsed = parseDhcpPacket(payload!);
+    expect(parsed?.mac).toBe('be:06:60:32:27:c6');
+    expect(parsed?.messageType).toBe(3);
+    expect(parsed?.hostname).toBe('Watch');
+  });
 });
 
 describe('resolveDhcpSniffIfaces', () => {

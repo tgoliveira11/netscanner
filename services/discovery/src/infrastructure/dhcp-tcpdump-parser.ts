@@ -19,7 +19,9 @@ export function frameFromTcpdumpHex(hexLines: string[]): Buffer | null {
   for (const line of hexLines) {
     const m = /^\s*0x[0-9a-f]+:\s+(.+)$/i.exec(line);
     if (!m) continue;
-    const pairs = m[1]!.match(/\b[0-9a-f]{2}\b/gi);
+    // tcpdump -xx groups nibbles as "ffff ffff" (OpenWrt/BusyBox) or "ff ff" (BSD);
+    // strip whitespace and read byte pairs from the contiguous hex run.
+    const pairs = m[1]!.replace(/\s/g, '').match(/[0-9a-f]{2}/gi);
     if (!pairs) continue;
     for (const p of pairs) bytes.push(Number.parseInt(p, 16));
   }
