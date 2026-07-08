@@ -7,6 +7,7 @@ import {
   type HealthResponse,
 } from '@netscanner/contracts';
 import type { Container } from '../container.js';
+import { resolvePfSenseTelemetry } from '@netscanner/discovery';
 import { RunScanUseCase } from '../application/run-scan.use-case.js';
 import { authorizeAgentControl } from './agent-control.js';
 import { registerAdminRoutes } from './admin-routes.js';
@@ -20,13 +21,14 @@ const VERSION = '0.1.0';
 export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Container): void {
   registerAdminRoutes(app, c);
   app.get('/api/health', async (_request, reply): Promise<HealthResponse> => {
-    // Health is non-sensitive and is polled cross-origin by the onboarding site
-    // (hosted anywhere) to detect the agent, so it is intentionally CORS-open.
-    // All other endpoints remain restricted to the allow-listed origins.
     reply.header('access-control-allow-origin', '*');
     return {
       status: 'ok',
-      capabilities: { nmap: c.capabilities.nmap, elevated: c.capabilities.elevated },
+      capabilities: {
+        nmap: c.capabilities.nmap,
+        elevated: c.capabilities.elevated,
+        nmapOffReason: c.capabilities.nmapOffReason,
+      },
       version: VERSION,
     };
   });
@@ -44,7 +46,22 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     if (!c.leaseSource) return { configured: false, leases: [] };
     try {
       const leases = await c.leaseSource.getLeases();
-      return { configured: true, source: c.leaseSource.name, count: leases.length, leases };
+      const telemetry = resolvePfSenseTelemetry(c.leaseSource);
+      return {
+        configured: true,
+        source: c.leaseSource.name,
+        count: leases.length,
+        leases,
+        pfsense: telemetry
+          ? {
+              version: telemetry.version,
+              hostname: telemetry.hostname,
+              gateways: telemetry.gateways.length,
+              interfaces: telemetry.interfaces.length,
+              fetchedAt: telemetry.fetchedAt,
+            }
+          : null,
+      };
     } catch (error) {
       return reply
         .status(502)
@@ -110,8 +127,8 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
       return reply.status(401).send({ error: 'unauthorized' });
     }
     c.logger.info('agent restart requested via API');
-    void reply.send({ ok: true, restarting: true });
-    setImmediate(() => process.exit(0));
+    await reply.send({ ok: true, restarting: true });
+    setTimeout(() => process.exit(0), 500);
   });
 
   app.post('/api/scans', async (request, reply) => {
@@ -155,6 +172,8 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     if (!device) return reply.status(404).send({ error: 'device not found' });
     return { device };
   });
+
+  app.get('/api/topology', async () => c.buildTopology.execute());
 
   app.patch('/api/devices/:id', async (request, reply) => {
     const { id } = request.params as { id: string };

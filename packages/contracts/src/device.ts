@@ -87,6 +87,9 @@ export const DeviceSchema = z.object({
   securityFlags: z.array(SecurityFlagSchema),
   label: z.string().nullable(),
   notes: z.string().nullable(),
+  /** LuCI / router panel login saved per device (password never returned by API). */
+  routerScrapeUser: z.string().nullable().optional(),
+  routerScrapePasswordSet: z.boolean().optional(),
   firstSeen: z.string(), // ISO 8601
   lastSeen: z.string(),
   /** Raw discovery signals kept for auditability/debugging. */

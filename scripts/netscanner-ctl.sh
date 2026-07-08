@@ -73,7 +73,7 @@ cmd_deploy() {
   rsync -a --exclude node_modules --exclude .next --exclude out --exclude '*.db' \
     "$SRC/packages" "$SRC/services" "$SRC/apps" "$NS/"
   echo "[netscanner-ctl] pnpm install"
-  (cd "$NS" && CI=1 pnpm install --prod=false --config.confirmModulesPurge=false)
+  (cd "$NS" && CI=1 pnpm install --prod=false --force)
   echo "[netscanner-ctl] build static dashboard"
   (cd "$NS" && BUILD_STATIC=1 pnpm --filter @netscanner/web build)
   echo "[netscanner-ctl] prisma db push"

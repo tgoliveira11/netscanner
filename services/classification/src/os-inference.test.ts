@@ -33,7 +33,7 @@ describe('inferOs', () => {
 
   it('distinguishes iOS from macOS by hostname', () => {
     expect(inferOs({ ...base, hostname: 'Johns-iPhone', vendor: 'Apple, Inc.' })?.os.family).toBe('iOS');
-    expect(inferOs({ ...base, hostname: 'Marias-MacBook-Pro', vendor: 'Apple, Inc.' })?.os.family).toBe('macOS');
+    expect(inferOs({ ...base, hostname: 'Example-MacBook-Pro', vendor: 'Apple, Inc.' })?.os.family).toBe('macOS');
   });
 
   it('infers embedded OS from the Espressif MAC vendor as a last resort', () => {

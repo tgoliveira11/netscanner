@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import type { Device } from '@netscanner/contracts';
-import type { DeviceFilter, IDeviceRepository } from '../domain/device-repository.js';
+import type { DeviceFilter, IDeviceRepository, RouterScrapeCredential } from '../domain/device-repository.js';
+import type { StoredDevice } from '../domain/device-public.js';
 import { DeviceMapper, type DeviceRow } from './device-mapper.js';
 
 /**
@@ -28,7 +29,12 @@ export class PrismaDeviceRepository implements IDeviceRepository {
     return row ? DeviceMapper.toDomain(row as DeviceRow) : null;
   }
 
-  async save(device: Device): Promise<void> {
+  async findStoredById(id: string): Promise<StoredDevice | null> {
+    const row = await this.prisma.deviceRecord.findUnique({ where: { id } });
+    return row ? DeviceMapper.toStored(row as DeviceRow) : null;
+  }
+
+  async save(device: Device | StoredDevice): Promise<void> {
     const row = DeviceMapper.toRow(device);
     await this.prisma.deviceRecord.upsert({
       where: { id: row.id },
@@ -57,6 +63,28 @@ export class PrismaDeviceRepository implements IDeviceRepository {
       orderBy: { ip: 'asc' },
     });
     return rows.map((r) => DeviceMapper.toDomain(r as DeviceRow));
+  }
+
+  async listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]> {
+    const rows = await this.prisma.deviceRecord.findMany({
+      where: { routerScrapeUser: { not: null }, routerScrapePassword: { not: null } },
+      select: {
+        ip: true,
+        deviceType: true,
+        brand: true,
+        routerScrapeUser: true,
+        routerScrapePassword: true,
+      },
+    });
+    return rows
+      .filter((r) => r.routerScrapeUser && r.routerScrapePassword)
+      .map((r) => ({
+        ip: r.ip,
+        deviceType: r.deviceType,
+        brand: r.brand,
+        routerScrapeUser: r.routerScrapeUser!,
+        routerScrapePassword: r.routerScrapePassword!,
+      }));
   }
 
   async markOfflineExcept(onlineIds: string[]): Promise<string[]> {

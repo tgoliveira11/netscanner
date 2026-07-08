@@ -21,7 +21,18 @@ export function Header() {
         <span className={`badge ${connected ? 'bg-good/15 text-good' : 'bg-bad/15 text-bad'}`}>
           {connected ? '● live' : '○ offline'}
         </span>
-        <span className={`badge ${caps?.nmap ? 'bg-good/15 text-good' : 'bg-edge text-muted'}`}>
+        <span
+          className={`badge ${caps?.nmap ? 'bg-good/15 text-good' : 'bg-edge text-muted'}`}
+          title={
+            caps?.nmap
+              ? undefined
+              : caps?.nmapOffReason === 'disabled-by-config'
+                ? 'DISABLE_NMAP=true in config'
+                : caps?.nmapOffReason === 'not-in-path'
+                  ? 'nmap not in PATH'
+                  : 'nmap off'
+          }
+        >
           nmap {caps?.nmap ? 'on' : 'off'}
         </span>
         <span className={`badge ${caps?.elevated ? 'bg-good/15 text-good' : 'bg-edge text-muted'}`}>

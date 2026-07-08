@@ -3,6 +3,8 @@ import { request as httpsRequest } from 'node:https';
 import { MacAddress, isOk } from '@netscanner/kernel';
 import type { Logger } from '@netscanner/logger';
 import type { IRouterLeaseSource, RouterLease } from '../domain/router-lease-source.js';
+import { LuciClient } from './luci-client.js';
+import { resolveLuciAuthMode } from './luci-auth-mode.js';
 
 export interface HttpRouterScrapeConfig {
   baseUrl: string;
@@ -29,49 +31,95 @@ export class HttpRouterScrapeAdapter implements IRouterLeaseSource {
     private readonly config: HttpRouterScrapeConfig,
     private readonly logger: Logger,
   ) {
-    this.name = `router-scrape-${config.kind}`;
+    this.name = `router-scrape-${hostLabel(config.baseUrl)}`;
   }
 
   async getLeases(): Promise<RouterLease[]> {
+    const auth = resolveLuciAuthMode({ kind: this.config.kind, username: this.config.username });
+    if (auth === 'compal-rsa' && this.config.username && this.config.password) {
+      try {
+        return await this.scrapeRsaLuci();
+      } catch (error) {
+        this.logger.warn(
+          {
+            host: hostLabel(this.config.baseUrl),
+            error: error instanceof Error ? error.message : error,
+          },
+          'Compal LuCI scrape failed — falling back to HTML ARP',
+        );
+        if (this.config.kind === 'compal') return this.scrapeCompalArp();
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+    }
     if (this.config.kind === 'openwrt') return this.scrapeOpenWrt();
     return this.scrapeCompalArp();
   }
 
+  /** Claro/CBN Compal LuCI with RSA login — ubus DHCP when available. */
+  private async scrapeRsaLuci(): Promise<RouterLease[]> {
+    const luci = new LuciClient({
+      baseUrl: this.config.baseUrl,
+      username: this.config.username!,
+      password: this.config.password!,
+      insecureTls: this.config.insecureTls,
+      auth: 'compal-rsa',
+    });
+    const { cookie, sessionId, stok } = await luci.session();
+    const ubusLeases = await this.scrapeOpenWrtUbus(luci, cookie, sessionId, stok);
+    if (ubusLeases.length) {
+      this.logger.info(
+        { count: ubusLeases.length, kind: 'compal', via: 'ubus', host: hostLabel(this.config.baseUrl) },
+        'router scrape leases',
+      );
+      return ubusLeases;
+    }
+    return [];
+  }
+
   /** LuCI 23.x loads leases via ubus; legacy builds embed rows in HTML. */
   private async scrapeOpenWrt(): Promise<RouterLease[]> {
-    const cookie = await this.luciLogin();
+    if (!this.config.username || !this.config.password) {
+      throw new Error('OpenWrt scrape requires username and password');
+    }
+    const luci = new LuciClient({
+      baseUrl: this.config.baseUrl,
+      username: this.config.username,
+      password: this.config.password,
+      insecureTls: this.config.insecureTls,
+    });
+    const { cookie, sessionId } = await luci.session();
+    const ubusLeases = await this.scrapeOpenWrtUbus(luci, cookie, sessionId);
+    if (ubusLeases.length) {
+      this.logger.info({ count: ubusLeases.length, kind: 'openwrt', via: 'ubus', host: hostLabel(this.config.baseUrl) }, 'router scrape leases');
+      return ubusLeases;
+    }
+
     const overview = await this.request(
       new URL('/cgi-bin/luci/admin/status/overview', this.config.baseUrl),
       { method: 'GET', headers: { Cookie: cookie } },
     );
-    if (overview.status >= 400) throw new Error(`HTTP ${overview.status}`);
-
-    const sessionId = overview.body.match(/"sessionid":\s*"([^"]+)"/)?.[1];
-    if (sessionId) {
-      const ubusLeases = await this.scrapeOpenWrtUbus(cookie, sessionId);
-      if (ubusLeases.length) {
-        this.logger.info({ count: ubusLeases.length, kind: 'openwrt', via: 'ubus' }, 'router scrape leases');
-        return ubusLeases;
-      }
-    }
-
     const htmlLeases = this.parseOpenWrtHtml(overview.body);
-    this.logger.info({ count: htmlLeases.length, kind: 'openwrt', via: 'html' }, 'router scrape leases');
+    this.logger.info({ count: htmlLeases.length, kind: 'openwrt', via: 'html', host: hostLabel(this.config.baseUrl) }, 'router scrape leases');
     return htmlLeases;
   }
 
-  private async scrapeOpenWrtUbus(cookie: string, sessionId: string): Promise<RouterLease[]> {
+  private async scrapeOpenWrtUbus(
+    luci: LuciClient,
+    cookie: string,
+    sessionId: string,
+    stok?: string,
+  ): Promise<RouterLease[]> {
     const leases = this.parseOpenWrtDhcpLeases(
-      await this.ubusCall(cookie, sessionId, 'luci-rpc', 'getDHCPLeases', { family: 4 }),
+      await luci.ubusCall(cookie, sessionId, 'luci-rpc', 'getDHCPLeases', { family: 4 }, stok),
     );
     if (leases.length) return leases;
     return this.parseOpenWrtHostHints(
-      await this.ubusCall(cookie, sessionId, 'luci-rpc', 'getHostHints', {}),
+      await luci.ubusCall(cookie, sessionId, 'luci-rpc', 'getHostHints', {}, stok),
     );
   }
 
   private parseOpenWrtDhcpLeases(payload: unknown): RouterLease[] {
-    const rows = this.ubusResult(payload) as { dhcp_leases?: unknown[] } | null;
+    const rows = ubusResult(payload) as { dhcp_leases?: unknown[] } | null;
     const leases: RouterLease[] = [];
     for (const row of rows?.dhcp_leases ?? []) {
       if (!row || typeof row !== 'object') continue;
@@ -94,7 +142,7 @@ export class HttpRouterScrapeAdapter implements IRouterLeaseSource {
   }
 
   private parseOpenWrtHostHints(payload: unknown): RouterLease[] {
-    const hints = this.ubusResult(payload) as Record<string, { ipaddrs?: string[]; name?: string }> | null;
+    const hints = ubusResult(payload) as Record<string, { ipaddrs?: string[]; name?: string }> | null;
     const leases: RouterLease[] = [];
     for (const [macRaw, hint] of Object.entries(hints ?? {})) {
       const parsed = MacAddress.create(macRaw.replace(/-/g, ':'));
@@ -110,36 +158,6 @@ export class HttpRouterScrapeAdapter implements IRouterLeaseSource {
       }
     }
     return leases;
-  }
-
-  private ubusResult(payload: unknown): unknown {
-    if (!payload || typeof payload !== 'object') return null;
-    const result = (payload as { result?: unknown[] }).result;
-    if (!Array.isArray(result) || result.length < 2) return null;
-    if (result[0] !== 0) return null;
-    return result[1];
-  }
-
-  private async ubusCall(
-    cookie: string,
-    sessionId: string,
-    object: string,
-    method: string,
-    args: Record<string, unknown>,
-  ): Promise<unknown> {
-    const body = JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'call',
-      params: [sessionId, object, method, args],
-    });
-    const res = await this.request(new URL('/cgi-bin/luci/admin/ubus', this.config.baseUrl), {
-      method: 'POST',
-      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-      body,
-    });
-    if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
-    return JSON.parse(res.body || '{}') as unknown;
   }
 
   private parseOpenWrtHtml(html: string): RouterLease[] {
@@ -161,32 +179,6 @@ export class HttpRouterScrapeAdapter implements IRouterLeaseSource {
     return leases;
   }
 
-  private async luciLogin(): Promise<string> {
-    if (!this.config.username || !this.config.password) {
-      throw new Error('OpenWrt scrape requires ROUTER_SCRAPE_USER and ROUTER_SCRAPE_PASSWORD');
-    }
-    const form = new URLSearchParams({
-      luci_username: this.config.username,
-      luci_password: this.config.password,
-    }).toString();
-    const res = await this.request(new URL('/cgi-bin/luci/', this.config.baseUrl), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form,
-    });
-    const cookie = this.extractCookie(res.headers);
-    if (!cookie) throw new Error('OpenWrt login failed (no session cookie)');
-    if (res.status >= 400 && res.status !== 302) throw new Error(`HTTP ${res.status}`);
-    return cookie;
-  }
-
-  private extractCookie(headers: HttpResponse['headers']): string {
-    const raw = headers['set-cookie'];
-    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    const parts = list.map((c) => c.split(';')[0]).filter(Boolean);
-    return parts.join('; ');
-  }
-
   private async scrapeCompalArp(): Promise<RouterLease[]> {
     const paths = ['/connected_devices_computers.jst', '/cgi-bin/connected_devices_computers.jst', '/'];
     for (const p of paths) {
@@ -194,7 +186,7 @@ export class HttpRouterScrapeAdapter implements IRouterLeaseSource {
         const html = await this.getText(new URL(p, this.config.baseUrl));
         const leases = this.parseCompalHtml(html);
         if (leases.length) {
-          this.logger.info({ count: leases.length, kind: 'compal', path: p }, 'router scrape leases');
+          this.logger.info({ count: leases.length, kind: 'compal', path: p, host: hostLabel(this.config.baseUrl) }, 'router scrape leases');
           return leases;
         }
       } catch {
@@ -267,5 +259,21 @@ export class HttpRouterScrapeAdapter implements IRouterLeaseSource {
       if (opts.body) req.write(opts.body);
       req.end();
     });
+  }
+}
+
+function ubusResult(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') return null;
+  const result = (payload as { result?: unknown[] }).result;
+  if (!Array.isArray(result) || result.length < 2) return null;
+  if (result[0] !== 0) return null;
+  return result[1];
+}
+
+function hostLabel(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname.replace(/\./g, '-');
+  } catch {
+    return 'unknown';
   }
 }

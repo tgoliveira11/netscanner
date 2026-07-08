@@ -1,4 +1,0 @@
-NetScanner pushes DHCP leases, ARP, gateways, and interface data from
-pfSense to a NetScanner agent on your LAN for inventory and topology.
-
-WWW: https://github.com/netscanner/netscanner
