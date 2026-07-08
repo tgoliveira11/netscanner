@@ -3,3 +3,4 @@ export * from './connection.js';
 export * from './scan.js';
 export * from './events.js';
 export * from './api.js';
+export * from './topology.js';

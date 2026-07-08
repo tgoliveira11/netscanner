@@ -17,6 +17,8 @@ export type ScanResponse = z.infer<typeof ScanResponseSchema>;
 export const UpdateDeviceRequestSchema = z.object({
   label: z.string().max(120).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
+  routerScrapeUser: z.string().max(120).nullable().optional(),
+  routerScrapePassword: z.string().max(200).nullable().optional(),
 });
 export type UpdateDeviceRequest = z.infer<typeof UpdateDeviceRequestSchema>;
 
@@ -28,6 +30,7 @@ export const HealthResponseSchema = z.object({
   capabilities: z.object({
     nmap: z.boolean(),
     elevated: z.boolean(),
+    nmapOffReason: z.enum(['disabled-by-config', 'not-in-path']).optional(),
   }),
   version: z.string(),
 });

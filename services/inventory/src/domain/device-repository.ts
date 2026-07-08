@@ -1,4 +1,13 @@
 import type { Device } from '@netscanner/contracts';
+import type { StoredDevice } from './device-public.js';
+
+export interface RouterScrapeCredential {
+  ip: string;
+  deviceType: string;
+  brand: string | null;
+  routerScrapeUser: string;
+  routerScrapePassword: string;
+}
 
 export interface DeviceFilter {
   search?: string;
@@ -15,8 +24,10 @@ export interface IDeviceRepository {
   findByMac(mac: string): Promise<Device | null>;
   findByIp(ip: string): Promise<Device | null>;
   findById(id: string): Promise<Device | null>;
-  save(device: Device): Promise<void>;
+  findStoredById(id: string): Promise<StoredDevice | null>;
+  save(device: Device | StoredDevice): Promise<void>;
   list(filter?: DeviceFilter): Promise<Device[]>;
+  listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]>;
   /** Mark devices not in the provided id set as offline; returns their ids. */
   markOfflineExcept(onlineIds: string[]): Promise<string[]>;
 }

@@ -24,6 +24,8 @@ model DeviceRecord {
   isOnline                 Boolean  @default(true)
   label                    String?
   notes                    String?
+  routerScrapeUser         String?
+  routerScrapePassword     String?
   // Complex fields serialized as JSON strings for DB portability.
   osJson                   String?
   servicesJson             String   @default("[]")
