@@ -179,6 +179,15 @@ export class DeviceEnrichmentService {
     }
     if (!device.os || !device.model) return true;
     if (device.os && !device.os.version && dhcp.vendorClass) return true;
+    const fbScore = device.signals['fingerbankScore'];
+    if (
+      dhcp &&
+      typeof fbScore === 'number' &&
+      fbScore < 55 &&
+      this.deps.fingerbank
+    ) {
+      return true;
+    }
     return false;
   }
 
