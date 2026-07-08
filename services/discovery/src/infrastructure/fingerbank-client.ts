@@ -72,15 +72,17 @@ export class FingerbankClient implements IDeviceFingerprintResolver {
         return null;
       }
       const data = (await res.json()) as Record<string, any>;
-      const deviceName: string | undefined = data?.device?.name ?? data?.device_name;
-      if (!deviceName) return null;
+      const devicePath = typeof data?.device_name === 'string' ? data.device_name : null;
+      const rawName: string | undefined = data?.device?.name;
+      if (!rawName && !devicePath) return null;
+      const deviceName = resolveHardwareName(rawName ?? devicePath ?? '', devicePath);
       const score = typeof data?.score === 'number' ? data.score : null;
       // A low score means Fingerbank is unsure — don't let it override heuristics.
       if (score !== null && score < this.minScore) return null;
       return {
         deviceName,
-        devicePath: typeof data?.device_name === 'string' ? data.device_name : null,
-        version: data?.version || null,
+        devicePath,
+        version: extractOsVersion(data),
         score,
       };
     } catch (error) {
@@ -88,4 +90,44 @@ export class FingerbankClient implements IDeviceFingerprintResolver {
       return null;
     }
   }
+}
+
+/** Prefer a specific hardware leaf from the path when the API name is generic (e.g. "Apple iPhone"). */
+export function resolveHardwareName(deviceName: string, devicePath: string | null): string {
+  const name = deviceName.trim();
+  if (!devicePath?.startsWith('Hardware/')) return name || devicePath || '';
+  const parts = devicePath.split('/').filter(Boolean);
+  const leaf = parts[parts.length - 1]?.trim();
+  if (!leaf) return name;
+  if (isGenericHardwareName(name) && !isGenericHardwareName(leaf)) return leaf;
+  return name || leaf;
+}
+
+function isGenericHardwareName(name: string): boolean {
+  return /^(apple\s+)?(iphone|ipad|ipod|apple watch|apple tv)$/i.test(name.trim());
+}
+
+/** OS version from Fingerbank v2 payload (top-level version or operating_system hierarchy). */
+export function extractOsVersion(data: Record<string, unknown>): string | null {
+  const top = data['version'];
+  if (typeof top === 'string' && top.trim()) return top.trim();
+
+  const os = data['operating_system'] as Record<string, unknown> | undefined;
+  const osName = typeof os?.['name'] === 'string' ? os['name'].trim() : '';
+  if (osName && /\d/.test(osName)) {
+    const ver = /(\d+(?:\.\d+)*)/.exec(osName)?.[1];
+    if (ver) return ver;
+  }
+
+  const parents = os?.['parents'];
+  if (Array.isArray(parents)) {
+    for (const p of parents) {
+      if (!p || typeof p !== 'object') continue;
+      const pname = (p as Record<string, unknown>)['name'];
+      if (typeof pname !== 'string') continue;
+      const ver = /(\d+(?:\.\d+)+)/.exec(pname)?.[1];
+      if (ver) return ver;
+    }
+  }
+  return null;
 }
