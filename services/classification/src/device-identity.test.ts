@@ -20,6 +20,14 @@ describe('resolveBrandModel', () => {
     ).toEqual({ brand: 'Apple', model: 'Apple TV' });
     expect(resolveBrandModel('Espressif Inc.', {})).toEqual({ brand: 'Espressif', model: null });
   });
+
+  it('resolves specific model from generic Fingerbank name via path', () => {
+    const id = resolveBrandModel('Apple, Inc.', {
+      fingerbankDevice: 'Apple iPhone',
+      fingerbankPath: 'Hardware/Apple/iPhone/iPhone 15 Pro',
+    });
+    expect(id.model).toBe('iPhone 15 Pro');
+  });
 });
 
 describe('resolveOs', () => {
@@ -57,6 +65,16 @@ describe('resolveOs', () => {
       hostname: null,
     });
     expect(os).toMatchObject({ family: 'Android', version: '14' });
+  });
+
+  it('uses mDNS osxvers for iOS hostname', () => {
+    const { os } = resolveOs(null, {
+      services: [],
+      signals: { mdnsOsVersion: '18.2', mdnsType: 'apple-mobdev2' },
+      vendor: 'Apple, Inc.',
+      hostname: 'sample-iphone',
+    });
+    expect(os).toMatchObject({ family: 'iOS', version: '18.2' });
   });
 });
 

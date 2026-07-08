@@ -38,6 +38,10 @@ export function resolveBrandModel(
     if (parts[0] === 'Hardware' && parts[1]) brand = parts[1];
   }
   if (fbName) model = fbName;
+  if (fbPath && (!model || isGenericHardwareModel(model))) {
+    const fromPath = modelFromHardwarePath(fbPath);
+    if (fromPath) model = fromPath;
+  }
   if (!brand && upnpMfr) brand = normalizeBrandName(upnpMfr);
   if (!model && upnpModel) model = upnpModel;
   const mdnsModel = readSignal(signals, 'mdnsModel') || readSignal(signals, 'mdnsAppleModel');
@@ -204,10 +208,25 @@ export function resolveOs(
     });
   }
   if (mdnsOsVer && isApple && !os?.version) {
-    add({
-      os: { family: 'macOS', name: 'macOS', version: mdnsOsVer, accuracy: 70, source: 'inferred' },
-      reason: `mDNS osxvers=${mdnsOsVer}`,
-    });
+    const appleMobile = /iphone|ipad|ipod/i.test(host + fbText + mdnsType);
+    if (appleMobile) {
+      const ipad = /ipad/i.test(host + fbText);
+      add({
+        os: {
+          family: ipad ? 'iPadOS' : 'iOS',
+          name: ipad ? 'iPadOS' : 'iOS',
+          version: mdnsOsVer,
+          accuracy: 68,
+          source: 'inferred',
+        },
+        reason: `mDNS osxvers=${mdnsOsVer}`,
+      });
+    } else {
+      add({
+        os: { family: 'macOS', name: 'macOS', version: mdnsOsVer, accuracy: 70, source: 'inferred' },
+        reason: `mDNS osxvers=${mdnsOsVer}`,
+      });
+    }
   }
 
   const upnpKind = readSignal(signals, 'upnpDeviceType');
@@ -230,4 +249,17 @@ export function resolveOs(
   }
 
   return { os, extraReason };
+}
+
+function isGenericHardwareModel(name: string): boolean {
+  return /^(apple\s+)?(iphone|ipad|ipod|apple watch|apple tv)$/i.test(name.trim());
+}
+
+/** Last Hardware/… segment when more specific than a generic family name. */
+export function modelFromHardwarePath(path: string): string | null {
+  const parts = path.split('/').filter(Boolean);
+  if (parts[0] !== 'Hardware' || parts.length < 3) return null;
+  const leaf = parts[parts.length - 1]?.trim();
+  if (!leaf || isGenericHardwareModel(leaf)) return null;
+  return leaf;
 }
