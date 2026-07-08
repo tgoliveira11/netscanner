@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<packagegui>
+	<copyright>
+		<year>2026</year>
+		<author>NetScanner</author>
+		<email>dev@netscanner.local</email>
+	</copyright>
+	<name>netscanner</name>
+	<version>%%PKGVERSION%%</version>
+	<descr><![CDATA[NetScanner telemetry push to your LAN agent.]]></descr>
+	<include_file>/usr/local/pkg/netscanner.inc</include_file>
+	<menu>
+		<name>NetScanner</name>
+		<section>Services</section>
+		<url>/packages/netscanner/index.php</url>
+	</menu>
+	<menu>
+		<name>NetScanner Settings</name>
+		<section>Services</section>
+		<url>/pkg_edit.php?xml=netscanner.xml</url>
+	</menu>
+	<configpath>installedpackages/netscanner/config/0</configpath>
+	<adddeleteeditpagefields>
+		<fieldname>enable</fieldname>
+		<fieldname>agent_url</fieldname>
+		<fieldname>push_token</fieldname>
+		<fieldname>agent_id</fieldname>
+		<fieldname>interval</fieldname>
+	</adddeleteeditpagefields>
+	<fields>
+		<field>
+			<fielddescr><![CDATA[Enable NetScanner push]]></fielddescr>
+			<fieldname>enable</fieldname>
+			<fieldtype>checkbox</fieldtype>
+		</field>
+		<field>
+			<fielddescr><![CDATA[Agent URL]]></fielddescr>
+			<fieldname>agent_url</fieldname>
+			<fieldtype>input</fieldtype>
+			<size>60</size>
+			<description><![CDATA[Base URL of the NetScanner agent on your LAN, e.g. http://192.168.51.106:4000]]></description>
+		</field>
+		<field>
+			<fielddescr><![CDATA[Push token]]></fielddescr>
+			<fieldname>push_token</fieldname>
+			<fieldtype>password</fieldtype>
+			<size>40</size>
+			<description><![CDATA[Must match PFSENSE_PUSH_TOKEN on the main agent.]]></description>
+		</field>
+		<field>
+			<fielddescr><![CDATA[Agent ID]]></fielddescr>
+			<fieldname>agent_id</fieldname>
+			<fieldtype>input</fieldtype>
+			<size>30</size>
+			<default_value>pfsense</default_value>
+			<description><![CDATA[Identifier sent in each payload (optional).]]></description>
+		</field>
+		<field>
+			<fielddescr><![CDATA[Push interval (minutes)]]></fielddescr>
+			<fieldname>interval</fieldname>
+			<fieldtype>select</fieldtype>
+			<default_value>2</default_value>
+			<options>
+				<option>
+					<name>Every minute</name>
+					<value>1</value>
+				</option>
+				<option>
+					<name>Every 2 minutes</name>
+					<value>2</value>
+				</option>
+				<option>
+					<name>Every 5 minutes</name>
+					<value>5</value>
+				</option>
+				<option>
+					<name>Every 10 minutes</name>
+					<value>10</value>
+				</option>
+			</options>
+		</field>
+	</fields>
+	<custom_php_resync_config_command>netscanner_sync_package();</custom_php_resync_config_command>
+	<custom_php_install_command>netscanner_install();</custom_php_install_command>
+	<custom_php_deinstall_command>netscanner_deinstall();</custom_php_deinstall_command>
+	<custom_php_validation_command>netscanner_validate_input($_POST, $input_errors);</custom_php_validation_command>
+</packagegui>
