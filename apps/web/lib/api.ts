@@ -60,7 +60,11 @@ export const api = {
 
   interfaces: () =>
     apiFetch('/api/network/interfaces').then((r) =>
-      json<{ interfaces: { name: string; cidr: string }[]; primaryCidr: string | null }>(r),
+      json<{
+        interfaces: { name: string; cidr: string }[];
+        primaryCidr: string | null;
+        scanCidrs: string[];
+      }>(r),
     ),
 
   listDevices: () => apiFetch('/api/devices').then((r) => json<{ devices: Device[]; total: number }>(r)),
@@ -69,12 +73,18 @@ export const api = {
 
   latestScan: () => apiFetch('/api/scans').then((r) => json<{ scan: ScanSession | null }>(r)),
 
-  startScan: (body: { cidr?: string; scanType: ScanType }) =>
+  startScan: (body: { cidr?: string; allCidrs?: boolean; scanType: ScanType }) =>
     apiFetch('/api/scans', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
-    }).then((r) => json<{ scan: ScanSession }>(r)),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const err = (await r.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(err?.error ?? `${r.status} ${r.statusText}`);
+      }
+      return json<{ scan: ScanSession }>(r);
+    }),
 
   updateDevice: (id: string, body: UpdateDeviceRequest) =>
     apiFetch(`/api/devices/${id}`, {

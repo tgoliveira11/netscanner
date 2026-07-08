@@ -64,7 +64,9 @@ export class BackgroundWorker {
     if (config.BACKGROUND_SCAN_ENABLED) {
       const scanMs = config.BACKGROUND_SCAN_INTERVAL_MS;
       this.scanTimer = setInterval(() => void this.runLightScan(), scanMs);
-      logger.info({ enrichMs, scanMs }, 'background worker started');
+      // Kick once shortly after start so Extra scan CIDRs are covered without waiting a full interval.
+      setTimeout(() => void this.runLightScan(), 5_000);
+      logger.info({ enrichMs, scanMs, scanCidrs: listScanCidrs(config.SCAN_CIDRS) }, 'background worker started');
     } else {
       logger.info({ enrichMs }, 'background worker started (light scan disabled)');
     }
@@ -154,11 +156,14 @@ export class BackgroundWorker {
     this.scanRunning = true;
     const scanId = BACKGROUND_LIGHT_SCAN_ID;
     try {
+      const parsed: Cidr[] = [];
       for (const cidrRaw of cidrs) {
         const cidr = Cidr.create(cidrRaw);
-        if (!isOk(cidr)) continue;
-        await this.deps.runScan.executeLight(scanId, cidr.value);
+        if (isOk(cidr)) parsed.push(cidr.value);
       }
+      if (!parsed.length) return;
+      this.deps.logger.info({ cidrs, count: parsed.length }, 'background light scan starting');
+      await this.deps.runScan.executeLight(scanId, parsed);
     } catch (error) {
       this.deps.logger.warn(
         { error: error instanceof Error ? error.message : error },

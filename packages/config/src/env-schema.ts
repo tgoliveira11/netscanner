@@ -17,6 +17,13 @@ export const EnvSchema = z.object({
   PFSENSE_INSECURE_TLS: envBool(true),
   FINGERBANK_API_KEY: z.string().optional(),
   DHCP_SNIFF: envBool(true),
+  /**
+   * Comma-separated local ifaces for DHCP tcpdump fallback (e.g. `any,en0`).
+   * Empty = auto from sniffable local interfaces; prefer `any` when multiple.
+   */
+  DHCP_SNIFF_IFACES: z.string().default(''),
+  /** Optional SSH password for remote DHCP sniff on SNMP_SWITCH_HOST (else ROUTER_SCRAPE_* for that IP). */
+  DHCP_SNIFF_SSH_PASSWORD: z.string().optional(),
   BACKGROUND_ENRICH_INTERVAL_MS: z.coerce.number().default(60_000),
   BACKGROUND_SCAN_INTERVAL_MS: z.coerce.number().default(900_000),
   BACKGROUND_SCAN_ENABLED: envBool(true),

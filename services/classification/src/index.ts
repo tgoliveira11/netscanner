@@ -9,6 +9,7 @@ export * from './domain/rules/gateway.rule.js';
 export * from './domain/rules/randomized-mac.rule.js';
 export * from './domain/rules/app-banner.rule.js';
 export * from './domain/rules/fingerbank.rule.js';
+export * from './domain/rules/pfsense-identity.rule.js';
 export * from './domain/os-inference.js';
 export * from './domain/connection-inference.js';
 export * from './application/classify-device.use-case.js';
@@ -22,10 +23,12 @@ import { GatewayRule } from './domain/rules/gateway.rule.js';
 import { RandomizedMacRule } from './domain/rules/randomized-mac.rule.js';
 import { AppBannerRule } from './domain/rules/app-banner.rule.js';
 import { FingerbankRule } from './domain/rules/fingerbank.rule.js';
+import { PfSenseIdentityRule } from './domain/rules/pfsense-identity.rule.js';
 
 /** Default rule set wired into the engine; extend by appending new rules (OCP). */
 export function defaultRules(): ClassificationRule[] {
   return [
+    new PfSenseIdentityRule(),
     new GatewayRule(),
     new VendorRule(),
     new PortServiceRule(),

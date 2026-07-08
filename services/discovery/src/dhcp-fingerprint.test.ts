@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseDhcpPacket } from './domain/dhcp-fingerprint.js';
-import { DhcpSniffer } from './infrastructure/dhcp-sniffer.js';
+import { DhcpSniffer, resolveDhcpSniffIfaces } from './infrastructure/dhcp-sniffer.js';
+import { CompositeDhcpFingerprintSource } from './infrastructure/composite-dhcp-fingerprint-source.js';
+import { remoteDhcpTcpdumpCommand } from './infrastructure/remote-dhcp-sniffer.js';
 import {
   dhcpPayloadFromTcpdumpHex,
   extractDhcpPayloadFromFrame,
@@ -72,6 +74,17 @@ describe('dhcp tcpdump parser', () => {
   });
 });
 
+describe('resolveDhcpSniffIfaces', () => {
+  it('prefers ifaces array over deprecated iface', () => {
+    expect(resolveDhcpSniffIfaces({ ifaces: ['any', 'en0'], iface: 'eth0' })).toEqual(['any', 'en0']);
+  });
+
+  it('falls back to iface then en0', () => {
+    expect(resolveDhcpSniffIfaces({ iface: 'bridge100' })).toEqual(['bridge100']);
+    expect(resolveDhcpSniffIfaces({})).toEqual(['en0']);
+  });
+});
+
 describe('DhcpSniffer', () => {
   it('lists captured fingerprints keyed by MAC', async () => {
     const sniffer = new DhcpSniffer({ debug: () => {}, info: () => {}, warn: () => {} } as never);
@@ -87,5 +100,82 @@ describe('DhcpSniffer', () => {
       },
     ]);
     expect(sniffer.get('AA:BB:CC:11:22:33')?.fingerprint).toBe('1,3,6,15');
+  });
+
+  it('stop() clears listening state after multi-proc tracking init', () => {
+    const sniffer = new DhcpSniffer({ debug: () => {}, info: () => {}, warn: () => {} } as never, {
+      ifaces: ['any'],
+    });
+    expect(sniffer.isListening()).toBe(false);
+    sniffer.stop();
+    expect(sniffer.mode()).toBeNull();
+    expect(sniffer.sniffIfaces()).toEqual([]);
+  });
+});
+
+describe('CompositeDhcpFingerprintSource', () => {
+  it('merges get/list and reports composite mode', async () => {
+    const a = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(),
+      get: (mac: string) =>
+        mac.toLowerCase() === 'aa:bb:cc:11:22:33'
+          ? {
+              mac: 'aa:bb:cc:11:22:33',
+              fingerprint: '1,3,6,15',
+              vendorClass: null,
+              hostname: null,
+            }
+          : undefined,
+      list: () => [
+        {
+          mac: 'aa:bb:cc:11:22:33',
+          fingerprint: '1,3,6,15',
+          vendorClass: null,
+          hostname: null,
+        },
+      ],
+      size: () => 1,
+      isListening: () => true,
+      mode: () => 'tcpdump' as const,
+      sniffIfaces: () => ['any'],
+      onCaptured: () => () => {},
+    };
+    const b = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(),
+      get: () => undefined,
+      list: () => [
+        {
+          mac: 'dd:ee:ff:00:11:22',
+          fingerprint: '1,28,121',
+          vendorClass: 'android-dhcp',
+          hostname: 'pixel',
+        },
+      ],
+      size: () => 1,
+      isListening: () => true,
+      mode: () => 'remote-tcpdump',
+      sniffIfaces: () => ['10.0.40.2:br-lan'],
+      onCaptured: () => () => {},
+    };
+    const composite = new CompositeDhcpFingerprintSource([a, b]);
+    await composite.start();
+    expect(a.start).toHaveBeenCalled();
+    expect(b.start).toHaveBeenCalled();
+    expect(composite.size()).toBe(2);
+    expect(composite.get('AA:BB:CC:11:22:33')?.fingerprint).toBe('1,3,6,15');
+    expect(composite.mode()).toBe('composite:tcpdump+remote-tcpdump');
+    expect(composite.sniffIfaces()).toEqual(['any', '10.0.40.2:br-lan']);
+    composite.stop();
+    expect(a.stop).toHaveBeenCalled();
+    expect(b.stop).toHaveBeenCalled();
+  });
+});
+
+describe('remoteDhcpTcpdumpCommand', () => {
+  it('documents br-lan capture without secrets', () => {
+    expect(remoteDhcpTcpdumpCommand()).toContain('br-lan');
+    expect(remoteDhcpTcpdumpCommand()).toContain('udp port 67');
   });
 });

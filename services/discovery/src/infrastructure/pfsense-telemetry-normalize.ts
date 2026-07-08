@@ -14,18 +14,60 @@ export function normalizePfSenseArpRow(r: Record<string, unknown>): RouterLease 
   });
 }
 
+/**
+ * Normalize a gateway status/config row.
+ *
+ * `/api/v2/status/gateways` exposes `srcip` (local WAN address used as the
+ * probe source) but often omits the real next-hop. Never treat `srcip` as
+ * `gateway` — that wrongly identifies the pfSense WAN NIC as the ISP CPE.
+ * Prefer an explicit next-hop IP from `gateway` / `gatewayip` when present and
+ * not the placeholder `dynamic`.
+ */
 export function normalizePfSenseGatewayRow(r: Record<string, unknown>): PfSenseGatewayRow {
   const delay = num(r['delay']);
   const loss = num(r['loss']);
+  const rawGateway = str(r['gateway'] ?? r['gatewayip'] ?? r['gateway_ip']);
+  const gateway = rawGateway && !/^dynamic$/i.test(rawGateway) ? rawGateway : null;
   return {
     name: str(r['name']) ?? null,
-    gateway: str(r['gateway'] ?? r['srcip']) ?? null,
+    gateway,
+    srcip: str(r['srcip'] ?? r['src_ip']) ?? null,
     monitor: str(r['monitor'] ?? r['monitorip']) ?? null,
     status: str(r['status']) ?? null,
     delay: delay ?? null,
     loss: loss ?? null,
     interface: str(r['interface'] ?? r['if']) ?? null,
   };
+}
+
+/** Overlay configured next-hop / interface from `/api/v2/routing/gateways` onto status rows. */
+export function mergePfSenseGatewayRows(
+  statusRows: PfSenseGatewayRow[],
+  configRows: PfSenseGatewayRow[],
+): PfSenseGatewayRow[] {
+  if (configRows.length === 0) return statusRows;
+  const byName = new Map(
+    configRows
+      .filter((r) => r.name)
+      .map((r) => [r.name!.toLowerCase(), r] as const),
+  );
+  const mergedNames = new Set<string>();
+  const out: PfSenseGatewayRow[] = statusRows.map((status) => {
+    const cfg = status.name ? byName.get(status.name.toLowerCase()) : undefined;
+    if (status.name) mergedNames.add(status.name.toLowerCase());
+    if (!cfg) return status;
+    return {
+      ...status,
+      gateway: status.gateway ?? cfg.gateway,
+      interface: status.interface ?? cfg.interface,
+      monitor: status.monitor ?? cfg.monitor,
+    };
+  });
+  for (const cfg of configRows) {
+    if (!cfg.name || mergedNames.has(cfg.name.toLowerCase())) continue;
+    out.push(cfg);
+  }
+  return out;
 }
 
 export function normalizePfSenseInterfaceRow(r: Record<string, unknown>): PfSenseInterfaceRow {

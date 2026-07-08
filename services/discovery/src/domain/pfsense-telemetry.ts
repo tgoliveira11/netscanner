@@ -1,7 +1,10 @@
 /** Live pfSense telemetry from the REST API package (read-only). */
 export interface PfSenseGatewayRow {
   name: string | null;
+  /** Next-hop IP when known. Never the local WAN iface IP (`srcip`). */
   gateway: string | null;
+  /** Local source IP used for monitor probes (WAN iface address). Not a next-hop. */
+  srcip: string | null;
   monitor: string | null;
   status: string | null;
   delay: number | null;

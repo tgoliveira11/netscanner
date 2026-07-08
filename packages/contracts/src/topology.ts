@@ -20,7 +20,7 @@ export const TopologyVlanSchema = z.object({
 });
 export type TopologyVlan = z.infer<typeof TopologyVlanSchema>;
 
-export const TopologyNodeRole = z.enum(['gateway', 'wired-router', 'wifi-ap', 'endpoint']);
+export const TopologyNodeRole = z.enum(['wan', 'gateway', 'wired-router', 'wifi-ap', 'endpoint']);
 export type TopologyNodeRole = z.infer<typeof TopologyNodeRole>;
 
 export const TopologyNodeSchema = z.object({
