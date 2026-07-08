@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import type { IVendorLookup } from '@netscanner/kernel';
 import { DeviceEnrichmentService } from './application/device-enrichment.service.js';
+import { ClassifyDeviceUseCase, ClassificationEngine, SecurityAnalyzer, defaultRules } from '@netscanner/classification';
 import type { Device } from '@netscanner/contracts';
+import { TrafficMonitor } from '@netscanner/scanner';
+
+const stubVendor = (vendor?: string): IVendorLookup => ({ resolve: () => vendor });
 
 const baseDevice = (over: Partial<Device> = {}): Device => ({
   id: '1',
@@ -52,5 +57,68 @@ describe('DeviceEnrichmentService', () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it('needs port rescan when online with no prior scan or stale portScanAt', () => {
+    const svc = new DeviceEnrichmentService({
+      classify: { execute: () => ({}) } as never,
+      upsert: { execute: async () => ({}) } as never,
+      repo: {} as never,
+    });
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    expect(svc.needsPortRescan(baseDevice(), weekMs)).toBe(true);
+    expect(svc.needsPortRescan(baseDevice({ isOnline: false }), weekMs)).toBe(false);
+    expect(
+      svc.needsPortRescan(
+        baseDevice({
+          services: [{ port: 443, protocol: 'tcp', state: 'open' }],
+          signals: { portScanAt: new Date().toISOString() },
+        }),
+        weekMs,
+      ),
+    ).toBe(false);
+    expect(
+      svc.needsPortRescan(
+        baseDevice({
+          services: [{ port: 443, protocol: 'tcp', state: 'open' }],
+          signals: { portScanAt: new Date(Date.now() - weekMs - 1).toISOString() },
+        }),
+        weekMs,
+      ),
+    ).toBe(true);
+  });
+
+  it('buildSnapshot attaches DNS profile, CVE findings, and traffic on first pass', async () => {
+    const classify = new ClassifyDeviceUseCase(
+      new ClassificationEngine(defaultRules()),
+      stubVendor('Test'),
+      new SecurityAnalyzer(),
+    );
+    const trafficMonitor = new TrafficMonitor();
+    trafficMonitor.ingest([{ ip: '192.168.1.10', bytesIn: 1000, bytesOut: 2000, connections: 3 }], 0);
+    trafficMonitor.ingest([{ ip: '192.168.1.10', bytesIn: 2000, bytesOut: 4000, connections: 4 }], 1000);
+
+    const svc = new DeviceEnrichmentService({
+      classify,
+      upsert: { execute: async () => ({}) } as never,
+      repo: {} as never,
+      trafficMonitor,
+    });
+
+    const snapshot = await svc.buildSnapshot({
+      ip: '192.168.1.10',
+      mac: 'aa:bb:cc:11:22:33',
+      hostname: 'nas',
+      services: [{ port: 22, protocol: 'tcp', state: 'open', product: 'OpenSSH', version: '8.4' }],
+      os: null,
+      latencyMs: 1,
+      signals: { dnsRecentQueries: ['pool.ntp.org', 'update.microsoft.com'] },
+      gatewayIp: '192.168.1.1',
+    });
+
+    expect(snapshot.signals['dnsProfile']).toBeDefined();
+    expect(Array.isArray(snapshot.signals['cveFindings'])).toBe(true);
+    expect(typeof snapshot.signals['riskScore']).toBe('number');
+    expect(snapshot.signals['traffic']).toMatchObject({ bytesIn: 2000, bytesOut: 4000 });
   });
 });

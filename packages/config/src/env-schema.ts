@@ -15,6 +15,11 @@ export const EnvSchema = z.object({
   PFSENSE_API_KEY: z.string().optional(),
   PFSENSE_LEASES_PATH: z.string().default('/api/v2/status/dhcp_server/leases'),
   PFSENSE_INSECURE_TLS: envBool(true),
+  /** Poll pfSense firewall state table via REST API for per-device bytes/peers (Relations). */
+  PFSENSE_TRAFFIC_ENABLED: envBool(true),
+  PFSENSE_SSH_USER: z.string().default('admin'),
+  PFSENSE_SSH_PORT: z.coerce.number().default(22),
+  PFSENSE_SSH_PASSWORD: z.string().optional(),
   FINGERBANK_API_KEY: z.string().optional(),
   DHCP_SNIFF: envBool(true),
   /**
@@ -27,6 +32,12 @@ export const EnvSchema = z.object({
   BACKGROUND_ENRICH_INTERVAL_MS: z.coerce.number().default(60_000),
   BACKGROUND_SCAN_INTERVAL_MS: z.coerce.number().default(900_000),
   BACKGROUND_SCAN_ENABLED: envBool(true),
+  /** Re-fingerprint online devices whose port scan is older than max age. */
+  BACKGROUND_PORT_RESCAN_ENABLED: envBool(true),
+  /** Max age (ms) before a background port rescan is scheduled (default 7 days). */
+  BACKGROUND_PORT_RESCAN_MAX_AGE_MS: z.coerce.number().default(604_800_000),
+  /** Max devices to port-rescan per background enrich sweep. */
+  BACKGROUND_PORT_RESCAN_BATCH: z.coerce.number().default(3),
   PASSIVE_LISTENERS_ENABLED: envBool(true),
   LLDP_PASSIVE_ENABLED: envBool(true),
   SNMP_ENABLED: envBool(true),
@@ -40,6 +51,21 @@ export const EnvSchema = z.object({
   PASSIVE_DNS_ENABLED: envBool(true),
   PASSIVE_IGMP_ENABLED: envBool(true),
   PASSIVE_DHCPV6_ENABLED: envBool(true),
+  /** Fast ICMP presence polling for near-real-time online/offline in the UI. */
+  PRESENCE_POLL_ENABLED: envBool(true),
+  PRESENCE_POLL_INTERVAL_MS: z.coerce.number().default(30_000),
+  PRESENCE_PING_TIMEOUT_MS: z.coerce.number().default(2500),
+  PRESENCE_PING_CONCURRENCY: z.coerce.number().default(32),
+  /** Consecutive failed pings before marking a host offline (reduces flapping). */
+  PRESENCE_OFFLINE_AFTER_MISSES: z.coerce.number().default(4),
+  /** 32-byte key as 64-char hex or base64; else ~/.netscanner/.encryption-key is used. */
+  AGENT_ENCRYPTION_KEY: z.string().optional(),
+  /** Passive TCP SYN stack fingerprinting (p0f-style, needs root tcpdump). */
+  P0F_PASSIVE_ENABLED: envBool(true),
+  /** Cisco CDP passive capture (ether proto 0x2000). */
+  CDP_PASSIVE_ENABLED: envBool(false),
+  /** Bayesian log-odds fusion for device classification (else weighted vote). */
+  BAYESIAN_CLASSIFICATION: envBool(true),
   /** Continuous tcpdump LLDP stream vs periodic burst capture. */
   LLDP_STREAM_ENABLED: envBool(true),
   /** Extra subnets to scan (comma-separated CIDRs). Local interfaces are always included. */

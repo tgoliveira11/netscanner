@@ -6,6 +6,12 @@ export interface ClassificationOutcome {
   /** Normalized confidence in [0,1]. */
   confidence: number;
   reasons: string[];
+  /** Top posterior candidates when using Bayesian fusion. */
+  evidence?: { deviceType: DeviceType; posterior: number; reasons: string[] }[];
+}
+
+export interface IClassificationEngine {
+  classify(input: ClassificationInput): ClassificationOutcome;
 }
 
 /**
@@ -13,7 +19,7 @@ export interface ClassificationOutcome {
  * type + confidence. Depends only on the ClassificationRule port (DIP) and is a
  * pure function of its inputs, so it is fully deterministic and unit-testable.
  */
-export class ClassificationEngine {
+export class ClassificationEngine implements IClassificationEngine {
   constructor(private readonly rules: readonly ClassificationRule[]) {}
 
   classify(input: ClassificationInput): ClassificationOutcome {

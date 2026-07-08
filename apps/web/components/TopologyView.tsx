@@ -1,244 +1,356 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import type { Device, TopologyEdge, TopologyNodeRole, TopologyResponse, TopologyVlan } from '@netscanner/contracts';
-import { api } from '../lib/api';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { TopologyEdge, TopologyNodeRole } from '@netscanner/contracts';
 import { useStore } from '../lib/store';
 import { deviceMeta, topologyNodeIcon } from '../lib/device-ui';
+import {
+  edgeStroke,
+  layoutVlanTree,
+  vlanColorMap,
+  type NodePos,
+} from '../lib/topology-layout';
+import { buildRenderLayout, useTopologyStore, type ViewTransform } from '../lib/topology-store';
 
-interface NodePos {
-  device: Device;
-  x: number;
-  y: number;
-  role: TopologyNodeRole | 'unknown';
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 2.5;
+const ZOOM_STEP = 1.18;
+
+function clampZoom(scale: number): number {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
 }
 
-const PAD_X = 48;
-const LAYER_DY = 96;
-const TOP_Y = 48;
-const MIN_WIDTH = 780;
-
-const VLAN_COLORS = [
-  '#38bdf8',
-  '#34d399',
-  '#a78bfa',
-  '#fbbf24',
-  '#f472b6',
-  '#fb923c',
-  '#2dd4bf',
-  '#818cf8',
-];
-
-function vlanColorMap(vlans: TopologyVlan[]): Map<string, string> {
-  const map = new Map<string, string>();
-  vlans.forEach((v, i) => map.set(v.id, VLAN_COLORS[i % VLAN_COLORS.length]!));
-  map.set('unknown', '#475569');
-  return map;
-}
-
-function edgeStroke(
-  edge: TopologyEdge,
-  online: boolean,
-  colors: Map<string, string>,
-): { stroke: string; dash?: string; width: number } {
-  if (!online) return { stroke: '#1b2438', width: 0.7 };
-  const color = edge.vlan ? (colors.get(edge.vlan) ?? '#64748b') : '#64748b';
-  if (edge.kind === 'wifi') return { stroke: color, dash: '3 3', width: 0.9 };
-  return { stroke: color, width: 1.1 };
-}
-
-/**
- * Layout: optional WAN modem(s) above → gateway → infra + APs by VLAN → clients.
- * Prefer parent→child tree from edges rather than flat tier buckets so VLANs stay grouped.
- *
- * Edge convention: `from` hangs under `to` (child → parent). WAN modems are parents of
- * the gateway (`from=gateway`, `to=modem`), so they are walked via incoming edges.
- */
-function layoutVlanTree(
-  list: Device[],
-  topology: TopologyResponse | null,
-): { nodes: NodePos[]; edges: TopologyEdge[]; width: number; height: number } {
-  const edges = topology?.edges ?? [];
-  const gatewayId = topology?.gatewayId ?? null;
-  const metaById = new Map((topology?.nodes ?? []).map((n) => [n.id, n]));
-  const byId = new Map(list.map((d) => [d.id, d]));
-
-  if (!gatewayId || !byId.has(gatewayId)) {
-    return { nodes: [], edges: [], width: MIN_WIDTH, height: 200 };
+function viewCenteredOnGateway(
+  gateway: NodePos | undefined,
+  graphWidth: number,
+  graphHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): ViewTransform {
+  if (!gateway || viewportWidth <= 0 || viewportHeight <= 0) {
+    return { scale: 1, panX: 0, panY: 0 };
   }
-
-  const childrenOf = new Map<string, string[]>();
-  const parentsOf = new Map<string, string[]>();
-  for (const edge of edges) {
-    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
-    const group = childrenOf.get(edge.to) ?? [];
-    if (!group.includes(edge.from)) group.push(edge.from);
-    childrenOf.set(edge.to, group);
-    const parents = parentsOf.get(edge.from) ?? [];
-    if (!parents.includes(edge.to)) parents.push(edge.to);
-    parentsOf.set(edge.from, parents);
-  }
-
-  // Sort children: wired-router first, then wifi-ap, then by VLAN then IP.
-  const roleRank = (id: string) => {
-    const role = metaById.get(id)?.role;
-    if (role === 'wan') return -1;
-    if (role === 'wired-router') return 0;
-    if (role === 'wifi-ap') return 1;
-    return 2;
-  };
-  const vlanOf = (id: string) => {
-    const edge = edges.find((e) => e.from === id);
-    return edge?.vlan ?? resolveDeviceFallbackVlan(byId.get(id));
-  };
-  const sortKids = (ids: string[]) =>
-    [...ids].sort((a, b) => {
-      const rr = roleRank(a) - roleRank(b);
-      if (rr !== 0) return rr;
-      const va = vlanOf(a).localeCompare(vlanOf(b));
-      if (va !== 0) return va;
-      return (byId.get(a)?.ip ?? a).localeCompare(byId.get(b)?.ip ?? b);
-    });
-
-  const visited = new Set<string>();
-
-  // WAN modems are parents of the gateway (edge from=gateway → to=modem).
-  const wanParents = sortKids(
-    (parentsOf.get(gatewayId) ?? []).filter((id) => metaById.get(id)?.role === 'wan' || id !== gatewayId),
-  ).filter((id) => byId.has(id));
-
-  // Children under gateway exclude wan reverse links already handled.
-  const gatewayKids = sortKids(childrenOf.get(gatewayId) ?? []).filter(
-    (id) => metaById.get(id)?.role !== 'wan',
+  const fitScale = Math.min(
+    (viewportWidth * 0.9) / graphWidth,
+    (viewportHeight * 0.82) / graphHeight,
+    1.15,
   );
-
-  type ColumnGroup = { rootId: string; leafIds: string[] };
-  const groups: ColumnGroup[] = gatewayKids.map((rootId) => {
-    const leafIds = sortKids(childrenOf.get(rootId) ?? []).filter((id) => id !== gatewayId);
-    return { rootId, leafIds };
-  });
-
-  let cursor = 0;
-  const groupSpans: { rootId: string; start: number; width: number; leafIds: string[] }[] = [];
-  for (const group of groups) {
-    const width = Math.max(1, group.leafIds.length || 1);
-    groupSpans.push({ rootId: group.rootId, start: cursor, width, leafIds: group.leafIds });
-    cursor += width + 0.35;
-  }
-  const wanColumns = Math.max(1, wanParents.length);
-  const totalColumns = Math.max(1, cursor, wanColumns);
-
-  const positions = new Map<string, { x: number; y: number }>();
-  const wanOffset = wanParents.length > 0 ? LAYER_DY : 0;
-
-  if (wanParents.length > 0) {
-    wanParents.forEach((wanId, i) => {
-      const x = ((i + 0.5) / wanParents.length) * 100;
-      positions.set(wanId, { x, y: TOP_Y });
-      visited.add(wanId);
-    });
-  }
-
-  positions.set(gatewayId, { x: 50, y: TOP_Y + wanOffset });
-  visited.add(gatewayId);
-
-  for (const span of groupSpans) {
-    const mid = ((span.start + span.width / 2) / totalColumns) * 100;
-    positions.set(span.rootId, { x: mid, y: TOP_Y + wanOffset + LAYER_DY });
-    visited.add(span.rootId);
-
-    if (span.leafIds.length === 0) continue;
-    span.leafIds.forEach((leafId, i) => {
-      if (visited.has(leafId)) return;
-      const x = ((span.start + i + 0.5) / totalColumns) * 100;
-      positions.set(leafId, { x, y: TOP_Y + wanOffset + LAYER_DY * 2 });
-      visited.add(leafId);
-      const grand = sortKids(childrenOf.get(leafId) ?? []).filter((id) => !visited.has(id));
-      grand.forEach((gid, gi) => {
-        const gx = ((span.start + i + (gi + 1) / (grand.length + 1)) / totalColumns) * 100;
-        positions.set(gid, { x: gx, y: TOP_Y + wanOffset + LAYER_DY * 3 });
-        visited.add(gid);
-      });
-    });
-  }
-
-  const maxDepth = [...positions.values()].reduce((m, p) => Math.max(m, p.y), TOP_Y);
-  const width = Math.max(MIN_WIDTH, PAD_X * 2 + Math.max(totalColumns, 4) * 100);
-  const scaleX = (pct: number) => PAD_X + (pct / 100) * (width - PAD_X * 2);
-
-  const nodes: NodePos[] = [];
-  for (const [id, pos] of positions) {
-    const device = byId.get(id);
-    if (!device) continue;
-    nodes.push({
-      device,
-      x: scaleX(pos.x),
-      y: pos.y,
-      role: metaById.get(id)?.role ?? 'unknown',
-    });
-  }
-
-  const height = maxDepth + 64;
-  return { nodes, edges, width, height };
+  const scale = clampZoom(Math.max(0.4, fitScale));
+  return {
+    scale,
+    panX: viewportWidth / 2 - gateway.x * scale,
+    panY: viewportHeight / 2 - gateway.y * scale,
+  };
 }
 
-function resolveDeviceFallbackVlan(device: Device | undefined): string {
-  if (!device) return 'zzz';
-  const iface = device.signals?.pfsenseInterface ?? device.signals?.routerInterface;
-  if (typeof iface === 'string') return iface;
-  return device.ip;
-}
-
-function nodeIcon(role: TopologyNodeRole | 'unknown', device: Device): string {
+function nodeIcon(role: TopologyNodeRole | 'unknown', device: import('@netscanner/contracts').Device): string {
   if (role !== 'unknown' && role !== 'endpoint') return topologyNodeIcon(role);
   return deviceMeta(device.deviceType).icon;
 }
 
-export function TopologyView() {
+function nodeRadius(role: TopologyNodeRole | 'unknown', device: import('@netscanner/contracts').Device): number {
+  const isWan = role === 'wan';
+  const isGateway = role === 'gateway';
+  const isAp = role === 'wifi-ap';
+  const isInfra = role === 'wired-router';
+  const isRouter = isWan || isGateway || isAp || isInfra || device.deviceType === 'router';
+  return isGateway || isWan ? 22 : isRouter ? 17 : 12;
+}
+
+function nodeDisplayLabel(
+  role: TopologyNodeRole | 'unknown',
+  device: import('@netscanner/contracts').Device,
+): string {
+  if (role === 'wan') {
+    return (
+      device.hostname ||
+      (typeof device.signals?.pfsenseInterface === 'string'
+        ? `Modem ${device.signals.pfsenseInterface}`
+        : 'Modem')
+    );
+  }
+  if (role === 'gateway') return device.hostname || 'pfSense';
+  return device.hostname || device.ip;
+}
+
+/** Vertical extent of a node's caption block below the circle (for collision checks). */
+function nodeCaptionBottom(y: number, r: number, showIp: boolean): number {
+  return y + r + (showIp ? 32 : 18);
+}
+
+function nodeCaptionTop(y: number, r: number): number {
+  return y + r + 6;
+}
+
+function truncateLabel(text: string, max = 18): string {
+  return text.length > max ? `${text.slice(0, max - 2)}…` : text;
+}
+
+export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
   const devices = useStore((s) => s.devices);
   const select = useStore((s) => s.select);
-  const [topology, setTopology] = useState<TopologyResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  const topology = useTopologyStore((s) => s.topology);
+  const layoutCache = useTopologyStore((s) => s.layout);
+  const loading = useTopologyStore((s) => s.loading);
+  const view = useTopologyStore((s) => s.view);
+  const viewInitialized = useTopologyStore((s) => s.viewInitialized);
+  const setView = useTopologyStore((s) => s.setView);
+  const applyLayout = useTopologyStore((s) => s.applyLayout);
+  const markViewInitialized = useTopologyStore((s) => s.markViewInitialized);
+
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const dragActiveRef = useRef(false);
+  const autoCenteredRef = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => useTopologyStore.getState().subscribePage(), []);
 
   useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      setLoading(true);
-      api
-        .topology()
-        .then((t) => {
-          if (!cancelled) setTopology(t);
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    };
-    load();
-    const timer = setInterval(load, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
+    if (!viewInitialized) autoCenteredRef.current = false;
+  }, [viewInitialized]);
 
-  const layout = useMemo(() => layoutVlanTree(Object.values(devices), topology), [devices, topology]);
-  const { nodes, edges, width, height } = layout;
+  const deviceList = useMemo(() => Object.values(devices), [devices]);
+  const computed = useMemo(() => layoutVlanTree(deviceList, topology), [deviceList, topology]);
+  const layoutRevision = topology?.revision ?? 'none';
+
+  useEffect(() => {
+    if (!topology || computed.nodes.length === 0) return;
+    applyLayout(computed);
+    // Re-layout only when graph structure changes (revision), not on presence updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- computed derived from revision + device count
+  }, [layoutRevision, deviceList.length, applyLayout, topology]);
+
+  const { nodes: rawNodes, edges, width, height } = useMemo(
+    () => buildRenderLayout(layoutCache, computed),
+    [layoutCache, computed],
+  );
+
+  const nodes = useMemo(() => {
+    const seen = new Set<string>();
+    return rawNodes.filter((n) => {
+      if (seen.has(n.device.id)) return false;
+      seen.add(n.device.id);
+      return true;
+    });
+  }, [rawNodes]);
+
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.device.id, n])), [nodes]);
+  const gatewayNode = useMemo(
+    () =>
+      nodes.find((n) => n.role === 'gateway') ??
+      (topology?.gatewayId ? nodeById.get(topology.gatewayId) : undefined),
+    [nodes, topology?.gatewayId, nodeById],
+  );
   const vlans = topology?.vlans ?? [];
   const colors = useMemo(() => vlanColorMap(vlans), [vlans]);
-  const wiredCount = edges.filter((e) => e.kind === 'wired').length;
-  const wifiCount = edges.filter((e) => e.kind === 'wifi').length;
+  const wiredCount = edges.filter((e: TopologyEdge) => e.kind === 'wired').length;
+  const wifiCount = edges.filter((e: TopologyEdge) => e.kind === 'wifi').length;
+
+  const centerOnGateway = useCallback(() => {
+    const vp = viewportRef.current;
+    if (!vp || !gatewayNode) return;
+    setView(viewCenteredOnGateway(gatewayNode, width, height, vp.clientWidth, vp.clientHeight));
+    markViewInitialized();
+    autoCenteredRef.current = true;
+  }, [gatewayNode, width, height, setView, markViewInitialized]);
+
+  // Auto-center only once when the graph first becomes visible — never on layout/size updates.
+  useLayoutEffect(() => {
+    if (viewInitialized || autoCenteredRef.current || nodes.length === 0) return;
+    const vp = viewportRef.current;
+    const gw = gatewayNode;
+    if (!vp || !gw) return;
+    autoCenteredRef.current = true;
+    markViewInitialized();
+    setView(viewCenteredOnGateway(gw, width, height, vp.clientWidth, vp.clientHeight));
+  }, [viewInitialized, nodes.length, gatewayNode?.device.id, markViewInitialized, setView]);
+
+  const zoomBy = useCallback(
+    (factor: number, anchorX?: number, anchorY?: number) => {
+      const vp = viewportRef.current;
+      if (!vp) return;
+      setView((cur) => {
+        const nextScale = clampZoom(cur.scale * factor);
+        const ax = anchorX ?? vp.clientWidth / 2;
+        const ay = anchorY ?? vp.clientHeight / 2;
+        const ratio = nextScale / cur.scale;
+        return {
+          scale: nextScale,
+          panX: ax - (ax - cur.panX) * ratio,
+          panY: ay - (ay - cur.panY) * ratio,
+        };
+      });
+    },
+    [setView],
+  );
+
+  useEffect(() => {
+    const blockSelect = (e: Event) => {
+      if (dragRef.current) e.preventDefault();
+    };
+    document.addEventListener('selectstart', blockSelect);
+    return () => document.removeEventListener('selectstart', blockSelect);
+  }, []);
+
+  const edgeLabels = useMemo(() => {
+    const labels: { key: string; x: number; y: number; text: string }[] = [];
+    const occupied: { x: number; y: number }[] = [];
+
+    for (const n of nodes) {
+      const r = nodeRadius(n.role, n.device);
+      const label = nodeDisplayLabel(n.role, n.device);
+      const showIp =
+        n.role !== 'gateway' &&
+        Boolean(n.device.hostname) &&
+        n.device.ip !== label &&
+        n.device.ip !== n.device.hostname;
+      occupied.push({ x: n.x, y: nodeCaptionTop(n.y, r) });
+      if (showIp) occupied.push({ x: n.x, y: nodeCaptionBottom(n.y, r, true) });
+    }
+
+    const tooClose = (x: number, y: number) =>
+      occupied.some((o) => Math.hypot(o.x - x, o.y - y) < 14);
+
+    for (const edge of edges) {
+      const from = nodeById.get(edge.from);
+      const to = nodeById.get(edge.to);
+      if (!from || !to) continue;
+
+      const text =
+        edge.kind === 'wifi' && edge.ssid
+          ? edge.ssid
+          : edge.label === 'mac-sharing'
+            ? 'mac-sharing'
+            : null;
+      if (!text) continue;
+
+      const fromR = nodeRadius(from.role, from.device);
+      const toR = nodeRadius(to.role, to.device);
+      const fromLabel = nodeDisplayLabel(from.role, from.device);
+      const toLabel = nodeDisplayLabel(to.role, to.device);
+      if (text === fromLabel || text === toLabel) continue;
+
+      // SSID / link caption sits just above the client circle (from), clear of node labels below.
+      const clientAboveParent = from.y < to.y;
+      let x = from.x;
+      let y = clientAboveParent ? from.y + fromR + 34 : from.y - fromR - 4;
+
+      if (tooClose(x, y)) {
+        const midX = (from.x + to.x) / 2;
+        const midY = (from.y + to.y) / 2;
+        const toShowIp =
+          Boolean(to.device.hostname) &&
+          to.device.ip !== toLabel &&
+          to.device.ip !== to.device.hostname;
+        const parentBottom = nodeCaptionBottom(to.y, toR, toShowIp);
+        y = Math.max(midY, parentBottom + 10);
+        x = midX;
+      }
+      if (tooClose(x, y)) continue;
+
+      labels.push({
+        key: `${edge.from}-${edge.to}-${text}`,
+        x,
+        y,
+        text,
+      });
+      occupied.push({ x, y });
+    }
+    return labels;
+  }, [edges, nodeById, nodes]);
+
+  const onWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault();
+      const rect = viewportRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const factor = e.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP;
+      zoomBy(factor, e.clientX - rect.left, e.clientY - rect.top);
+    },
+    [zoomBy],
+  );
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      dragRef.current = { x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY };
+      dragActiveRef.current = false;
+      setIsDragging(false);
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    },
+    [view.panX, view.panY],
+  );
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    if (!dragActiveRef.current && Math.hypot(dx, dy) < 4) return;
+    if (!dragActiveRef.current) window.getSelection()?.removeAllRanges();
+    dragActiveRef.current = true;
+    e.preventDefault();
+    setIsDragging(true);
+    setView((cur) => ({
+      ...cur,
+      panX: drag.panX + dx,
+      panY: drag.panY + dy,
+    }));
+  }, [setView]);
+
+  const onPointerUp = useCallback(() => {
+    dragRef.current = null;
+    dragActiveRef.current = false;
+    setIsDragging(false);
+  }, []);
 
   return (
-    <div className="card flex min-h-[640px] flex-col p-4">
+    <div className={`card flex flex-col p-4 ${fullPage ? 'min-h-[calc(100vh-8rem)]' : 'min-h-[640px]'}`}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-200">Topology</h3>
-        <span className="text-xs text-muted">
-          {loading
-            ? 'Updating…'
-            : `${nodes.length} nodes · ${wiredCount} wired · ${wifiCount} wifi`}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          {nodes.length > 0 && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="btn btn-ghost px-2 py-1 text-xs"
+                onClick={() => zoomBy(1 / ZOOM_STEP)}
+                title="Zoom out"
+                aria-label="Zoom out"
+              >
+                −
+              </button>
+              <span className="min-w-[3rem] text-center text-[10px] text-muted">
+                {Math.round(view.scale * 100)}%
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost px-2 py-1 text-xs"
+                onClick={() => zoomBy(ZOOM_STEP)}
+                title="Zoom in"
+                aria-label="Zoom in"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost px-2 py-1 text-xs"
+                onClick={centerOnGateway}
+                title="Center on pfSense"
+              >
+                Center
+              </button>
+            </div>
+          )}
+          <span className="text-xs text-muted">
+            {loading
+              ? 'Updating…'
+              : `${nodes.length} nodes · ${wiredCount} wired · ${wifiCount} wifi`}
+          </span>
+        </div>
       </div>
 
       {vlans.length > 0 && (
@@ -267,24 +379,46 @@ export function TopologyView() {
         </div>
       )}
 
-      <div className="min-h-[600px] w-full flex-1 overflow-x-auto">
+      <div
+        ref={viewportRef}
+        className={`topology-canvas relative w-full flex-1 overflow-hidden rounded-lg border border-edge bg-base/40 select-none touch-none ${
+          fullPage ? 'min-h-[calc(100vh-12rem)]' : 'min-h-[600px]'
+        } ${isDragging ? 'topology-panning cursor-grabbing' : 'cursor-grab'}`}
+        onWheel={onWheel}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onDragStart={(e) => e.preventDefault()}
+      >
         {nodes.length === 0 ? (
           <p className="py-16 text-center text-sm text-muted">
-            No topology yet — wait for pfSense leases and a scan, then refresh.
+            {loading && !topology
+              ? 'Loading topology…'
+              : 'No topology yet — devices appear from pfSense leases and inventory; no scan required.'}
           </p>
         ) : (
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            className="h-full min-h-[600px] w-full"
-            style={{ minWidth: width }}
-            preserveAspectRatio="xMinYMid meet"
+          <div
+            className="topology-canvas select-none"
+            style={{
+              transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`,
+              transformOrigin: '0 0',
+              width,
+              height,
+            }}
           >
+            <svg
+              width={width}
+              height={height}
+              viewBox={`0 0 ${width} ${height}`}
+              className="select-none"
+              onDragStart={(e) => e.preventDefault()}
+            >
             {edges.map((edge) => {
               const from = nodeById.get(edge.from);
               const to = nodeById.get(edge.to);
               if (!from || !to) return null;
               const online = from.device.isOnline && to.device.isOnline;
-              const midY = (from.y + to.y) / 2;
               const style = edgeStroke(edge, online, colors);
               return (
                 <g key={`${edge.from}-${edge.to}-${edge.kind}`}>
@@ -298,16 +432,23 @@ export function TopologyView() {
                     strokeDasharray={style.dash}
                     opacity={online ? 0.75 : 0.28}
                   />
-                  {(edge.ssid ||
-                    (edge.label &&
-                      !['wired', 'uplink', 'infra', 'lan', 'wifi'].includes(edge.label))) && (
-                    <text x={(from.x + to.x) / 2} y={midY - 4} textAnchor="middle" fontSize={8} fill="#64748b">
-                      {edge.ssid ?? edge.label}
-                    </text>
-                  )}
                 </g>
               );
             })}
+
+            {edgeLabels.map(({ key, x, y, text }) => (
+              <text
+                key={key}
+                x={x}
+                y={y}
+                textAnchor="middle"
+                fontSize={8}
+                fill="#64748b"
+                pointerEvents="none"
+              >
+                {text}
+              </text>
+            ))}
 
             {nodes.map(({ device, x, y, role }) => {
               const isWan = role === 'wan';
@@ -315,22 +456,25 @@ export function TopologyView() {
               const isAp = role === 'wifi-ap';
               const isInfra = role === 'wired-router';
               const isRouter = isWan || isGateway || isAp || isInfra || device.deviceType === 'router';
-              const r = isGateway || isWan ? 22 : isRouter ? 17 : 12;
+              const r = nodeRadius(role, device);
               const icon = nodeIcon(role, device);
-              const label = isWan
-                ? device.hostname ||
-                  (typeof device.signals?.pfsenseInterface === 'string'
-                    ? `Modem ${device.signals.pfsenseInterface}`
-                    : 'Modem')
-                : isGateway
-                  ? device.hostname || 'pfSense'
-                  : device.hostname || device.ip;
+              const label = nodeDisplayLabel(role, device);
+              const showIp =
+                !isGateway &&
+                Boolean(device.hostname) &&
+                device.ip !== label &&
+                device.ip !== device.hostname;
+              const nameY = y + r + 16;
+              const ipY = y + r + 28;
               return (
-                <g key={device.id} className="cursor-pointer" onClick={() => select(device.id)}>
+                <g key={device.id}>
                   <circle
                     cx={x}
                     cy={y}
                     r={r}
+                    className="cursor-pointer"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => select(device.id)}
                     fill={
                       isWan
                         ? '#1a1208'
@@ -357,25 +501,49 @@ export function TopologyView() {
                     }
                     strokeWidth={isGateway || isWan ? 2.5 : isRouter ? 2 : 1}
                   />
-                  <text x={x} y={y + (isRouter ? 5 : 4)} textAnchor="middle" fontSize={isRouter ? 14 : 11}>
+                  <text
+                    x={x}
+                    y={y + (isRouter ? 5 : 4)}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={isRouter ? 14 : 11}
+                    pointerEvents="none"
+                  >
                     {icon}
                   </text>
-                  <text x={x} y={y + r + 13} textAnchor="middle" fontSize={9} fill="#94a3b8">
-                    {label.length > 18 ? `${label.slice(0, 16)}…` : label}
+                  <text
+                    x={x}
+                    y={nameY}
+                    textAnchor="middle"
+                    dominantBaseline="hanging"
+                    fontSize={9}
+                    fill="#94a3b8"
+                    pointerEvents="none"
+                  >
+                    {truncateLabel(label)}
                   </text>
-                  {!isGateway && (
-                    <text x={x} y={y + r + 24} textAnchor="middle" fontSize={8} fill="#475569">
+                  {showIp && (
+                    <text
+                      x={x}
+                      y={ipY}
+                      textAnchor="middle"
+                      dominantBaseline="hanging"
+                      fontSize={8}
+                      fill="#475569"
+                      pointerEvents="none"
+                    >
                       {device.ip}
                     </text>
                   )}
                 </g>
               );
             })}
-          </svg>
+            </svg>
+          </div>
         )}
       </div>
       <p className="mt-2 text-center text-xs text-muted">
-        Modem → pfSense → infra / WiFi APs by VLAN · solid = wired · dashed = wifi · line color = VLAN
+        Scroll to zoom · drag to pan · Center refocuses pfSense · solid = wired · dashed = wifi
       </p>
     </div>
   );

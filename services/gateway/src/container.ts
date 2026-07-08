@@ -43,6 +43,7 @@ import {
   type IDhcpFingerprintSource,
   type IDeviceFingerprintResolver,
   type IPassiveSignalStore,
+  type RemoteDnsPassiveListenerOptions,
 } from '@netscanner/discovery';
 import {
   FingerprintHostUseCase,
@@ -54,10 +55,15 @@ import {
   CompositeConnectionSource,
   UnifiConnectionSource,
   OmadaConnectionSource,
+  PfRestTrafficSource,
+  resolvePfSenseSshHost,
+  TrafficMonitor,
   type SnmpV3Config,
+  type ITrafficSource,
 } from '@netscanner/scanner';
 import {
   ClassificationEngine,
+  BayesianClassificationEngine,
   ClassifyDeviceUseCase,
   SecurityAnalyzer,
   defaultRules,
@@ -73,6 +79,9 @@ import {
   PrismaPassiveSignalStore,
   UpdateDeviceMetaUseCase,
   UpsertDeviceUseCase,
+  SecretCipher,
+  wrapWithSecretProtection,
+  SecretProtectingDeviceRepository,
   type IDeviceRepository,
   type IDhcpFingerprintStore,
 } from '@netscanner/inventory';
@@ -81,8 +90,10 @@ import { InProcessEventBus } from './infrastructure/event-bus.js';
 import { ScanSessionStore } from './application/scan-session.js';
 import { RunScanUseCase } from './application/run-scan.use-case.js';
 import { DeviceEnrichmentService } from './application/device-enrichment.service.js';
+import { PresenceMonitor } from './application/presence-monitor.js';
 import { BuildTopologyUseCase } from './application/build-topology.use-case.js';
 import { BackgroundWorker } from './application/background-worker.js';
+import { DnsActivityLog } from './application/dns-activity-log.js';
 import { createRuntimeSettings, type RuntimeSettingsService } from './application/runtime-settings.service.js';
 import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
 
@@ -108,10 +119,13 @@ export interface Container {
   passiveStore?: IPassiveSignalStore;
   passiveListeners?: PassiveListeners;
   backgroundWorker: BackgroundWorker;
+  presenceMonitor: PresenceMonitor;
   snmp: SnmpEnricher;
   fingerbank?: FingerbankClient;
   connectionSource?: IConnectionSource;
   logBuffer: LogRingBuffer;
+  trafficMonitor?: TrafficMonitor;
+  dnsActivityLog: DnsActivityLog;
   runtimeSettings: RuntimeSettingsService;
   agentLogPath: string;
   detectPrimaryCidr: () => string | null;
@@ -178,6 +192,39 @@ export function resolveRemoteDhcpSshCreds(
   };
 }
 
+/** Remote DNS sniff targets: pfSense (all VLANs) + optional OpenWrt bridge. */
+export function resolveRemoteDnsConfigs(cfg: AppConfig): RemoteDnsPassiveListenerOptions[] {
+  if (!cfg.PASSIVE_DNS_ENABLED) return [];
+  const out: RemoteDnsPassiveListenerOptions[] = [];
+
+  if (cfg.PFSENSE_URL?.trim() && cfg.PFSENSE_SSH_PASSWORD?.trim()) {
+    const host = resolvePfSenseSshHost(cfg.PFSENSE_URL);
+    if (host) {
+      out.push({
+        host,
+        port: cfg.PFSENSE_SSH_PORT,
+        username: cfg.PFSENSE_SSH_USER,
+        password: cfg.PFSENSE_SSH_PASSWORD,
+        remoteIface: 'any',
+        label: 'pfSense',
+      });
+    }
+  }
+
+  const switchCreds = resolveRemoteDhcpSshCreds(cfg);
+  if (switchCreds) {
+    out.push({
+      host: switchCreds.host,
+      username: switchCreds.username,
+      password: switchCreds.password,
+      remoteIface: 'br-lan',
+      label: 'switch',
+    });
+  }
+
+  return out;
+}
+
 function sniffIfacesFromSource(source: IDhcpFingerprintSource | undefined): string[] {
   if (!source) return [];
   const reporter = source as IDhcpFingerprintSource & { sniffIfaces?: () => string[] };
@@ -186,29 +233,48 @@ function sniffIfacesFromSource(source: IDhcpFingerprintSource | undefined): stri
 
 /** Attempt Prisma persistence; fall back to in-memory if the client isn't ready. */
 async function buildRepository(config: AppConfig, logger: Logger): Promise<IDeviceRepository> {
-  if (process.env.PERSISTENCE === 'memory') return new InMemoryDeviceRepository();
-  try {
-    const prismaSpecifier = '@prisma/client';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const prismaMod: any = await import(prismaSpecifier);
-    const url = resolveSqliteUrl(config.DATABASE_URL);
-    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
-    await prisma.$connect();
-    logger.info('using Prisma persistence');
-    return new PrismaDeviceRepository(prisma);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const mustPersist =
-      process.env.PERSISTENCE !== 'memory' &&
-      (process.env.NODE_ENV === 'production' || config.NODE_ENV === 'production');
-    if (mustPersist) {
-      throw new Error(
-        `Prisma persistence required in production but unavailable (${msg}). Run pnpm db:push.`,
-      );
+  let inner: IDeviceRepository;
+  if (process.env.PERSISTENCE === 'memory') {
+    inner = new InMemoryDeviceRepository();
+  } else {
+    try {
+      const prismaSpecifier = '@prisma/client';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const prismaMod: any = await import(prismaSpecifier);
+      const url = resolveSqliteUrl(config.DATABASE_URL);
+      const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+      await prisma.$connect();
+      logger.info('using Prisma persistence');
+      inner = new PrismaDeviceRepository(prisma);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const mustPersist =
+        process.env.PERSISTENCE !== 'memory' &&
+        (process.env.NODE_ENV === 'production' || config.NODE_ENV === 'production');
+      if (mustPersist) {
+        throw new Error(
+          `Prisma persistence required in production but unavailable (${msg}). Run pnpm db:push.`,
+        );
+      }
+      logger.warn({ error: msg }, 'Prisma unavailable (run `pnpm db:push`); falling back to in-memory storage');
+      inner = new InMemoryDeviceRepository();
     }
-    logger.warn({ error: msg }, 'Prisma unavailable (run `pnpm db:push`); falling back to in-memory storage');
-    return new InMemoryDeviceRepository();
   }
+
+  const cipher = SecretCipher.resolve({ envKey: config.AGENT_ENCRYPTION_KEY });
+  const repo = wrapWithSecretProtection(inner, cipher);
+  if (cipher) {
+    logger.info('router credential encryption at rest enabled');
+    if (repo instanceof SecretProtectingDeviceRepository) {
+      const migrated = await repo.migratePlaintextSecrets();
+      if (migrated > 0) {
+        logger.info({ count: migrated }, 'migrated plaintext router passwords to encrypted storage');
+      }
+    }
+  } else {
+    logger.warn('router password encryption unavailable — credentials stored in plaintext');
+  }
+  return repo;
 }
 
 async function buildDhcpFingerprintStore(
@@ -316,7 +382,10 @@ export async function buildContainer(): Promise<Container> {
 
   const vendorLookup = new OuiLookup(loadOuiTable());
   logger.info({ ouiVendors: vendorLookup.size }, 'OUI vendor database loaded');
-  const engine = new ClassificationEngine(defaultRules());
+  const rules = defaultRules();
+  const engine = config.BAYESIAN_CLASSIFICATION
+    ? new BayesianClassificationEngine(rules)
+    : new ClassificationEngine(rules);
   const classify = new ClassifyDeviceUseCase(engine, vendorLookup, new SecurityAnalyzer());
 
   const repo = await buildRepository(config, logger);
@@ -482,6 +551,21 @@ export async function buildContainer(): Promise<Container> {
       sources.length === 1 ? local : new CompositeDhcpFingerprintSource(sources);
   }
 
+  const trafficMonitor = new TrafficMonitor();
+  let trafficSource: ITrafficSource | undefined;
+  if (config.PFSENSE_TRAFFIC_ENABLED && config.PFSENSE_URL?.trim() && config.PFSENSE_API_KEY?.trim()) {
+    trafficSource = new PfRestTrafficSource(logger, {
+      baseUrl: config.PFSENSE_URL,
+      apiKey: config.PFSENSE_API_KEY,
+      insecureTls: config.PFSENSE_INSECURE_TLS,
+    });
+    logger.info({ url: config.PFSENSE_URL }, 'pfSense REST traffic sampling enabled (firewall/states)');
+  } else if (config.PFSENSE_TRAFFIC_ENABLED) {
+    logger.warn(
+      'PFSENSE_TRAFFIC_ENABLED but PFSENSE_URL + PFSENSE_API_KEY are required — traffic/relations peers disabled (SSH is only used for DNS passive)',
+    );
+  }
+
   const enrichment = new DeviceEnrichmentService({
     classify,
     upsert,
@@ -491,9 +575,11 @@ export async function buildContainer(): Promise<Container> {
     passiveStore,
     snmp,
     connectionSource,
+    trafficMonitor,
   });
 
   let passiveListeners: PassiveListeners | undefined;
+  const remoteDns = resolveRemoteDnsConfigs(config);
   if (config.PASSIVE_LISTENERS_ENABLED) {
     passiveListeners = new PassiveListeners({
       store: passiveStore,
@@ -503,14 +589,21 @@ export async function buildContainer(): Promise<Container> {
       lldpEnabled: config.LLDP_PASSIVE_ENABLED && capabilities.elevated,
       lldpStream: config.LLDP_STREAM_ENABLED,
       dnsEnabled: config.PASSIVE_DNS_ENABLED,
+      remoteDns,
+      p0fEnabled: config.P0F_PASSIVE_ENABLED,
+      cdpEnabled: config.CDP_PASSIVE_ENABLED,
       igmpEnabled: config.PASSIVE_IGMP_ENABLED,
       dhcpv6Enabled: config.PASSIVE_DHCPV6_ENABLED,
       elevated: capabilities.elevated,
     });
+    if (remoteDns.length) {
+      logger.info({ targets: remoteDns.map((t) => t.label ?? t.host) }, 'remote DNS passive listeners configured');
+    }
   }
 
   const events = new InProcessEventBus();
   const sessions = new ScanSessionStore();
+  const dnsActivityLog = new DnsActivityLog();
   const runScan = new RunScanUseCase({
     discover,
     lightDiscover,
@@ -519,11 +612,10 @@ export async function buildContainer(): Promise<Container> {
     enrichment,
     leaseSource,
     dhcpSource,
-    fingerbank,
     passiveStore,
-    snmp,
     connectionSource,
-    classify,
+    trafficSource,
+    trafficMonitor,
     upsert,
     repo,
     sessions,
@@ -531,6 +623,7 @@ export async function buildContainer(): Promise<Container> {
     logger,
     config,
     elevated: capabilities.elevated,
+    dnsActivityLog,
   });
 
   const backgroundWorker = new BackgroundWorker({
@@ -540,11 +633,26 @@ export async function buildContainer(): Promise<Container> {
     repo,
     lightDiscover,
     runScan,
+    fingerprint,
+    elevated: capabilities.elevated,
     sessions,
     events,
     detectPrimaryCidr,
     dhcpSource,
     passiveStore,
+    trafficSource,
+    trafficMonitor,
+    dnsActivityLog,
+  });
+
+  const presenceMonitor = new PresenceMonitor({
+    config,
+    logger,
+    runner,
+    repo,
+    events,
+    sessions,
+    leaseSource,
   });
 
   const listDevices = new ListDevicesUseCase(repo);
@@ -576,10 +684,13 @@ export async function buildContainer(): Promise<Container> {
     passiveStore,
     passiveListeners,
     backgroundWorker,
+    presenceMonitor,
     snmp,
     fingerbank,
     connectionSource,
     logBuffer,
+    trafficMonitor,
+    dnsActivityLog,
     runtimeSettings: null as unknown as RuntimeSettingsService,
     agentLogPath,
     detectPrimaryCidr,

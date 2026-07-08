@@ -42,6 +42,8 @@ const BANNER_SIGNAL_KEYS = [
   'llmnrName',
   'snmpSysDescr',
   'snmpSysName',
+  'sshBanner',
+  'p0fOsName',
   'lldpSystemName',
   'lldpChassis',
 ] as const;
