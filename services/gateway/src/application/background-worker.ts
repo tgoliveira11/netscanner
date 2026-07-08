@@ -4,10 +4,13 @@ import type { IEventPublisher } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
 import { listScanCidrs } from '@netscanner/os-abstraction';
 import type { DhcpFingerprint, DiscoverHostsUseCase, IPassiveSignalStore } from '@netscanner/discovery';
+import type { FingerprintHostUseCase, ITrafficSource, TrafficMonitor } from '@netscanner/scanner';
 import type { IDeviceRepository } from '@netscanner/inventory';
 import type { DeviceEnrichmentService } from './device-enrichment.service.js';
 import type { RunScanUseCase } from './run-scan.use-case.js';
 import type { ScanSessionStore } from './scan-session.js';
+import { emitDeviceUpsertEvents, emitDeviceAnomalies } from './scan-events.js';
+import type { DnsActivityLog } from './dns-activity-log.js';
 
 export const BACKGROUND_ENRICH_SCAN_ID = 'background-enrich';
 export const BACKGROUND_LIGHT_SCAN_ID = 'background-scan';
@@ -19,11 +22,16 @@ export interface BackgroundWorkerDeps {
   repo: IDeviceRepository;
   lightDiscover: DiscoverHostsUseCase;
   runScan: RunScanUseCase;
+  fingerprint: FingerprintHostUseCase;
+  elevated: boolean;
   sessions: ScanSessionStore;
   events: IEventPublisher;
   detectPrimaryCidr: () => string | null;
   dhcpSource?: { onCaptured(handler: (fp: DhcpFingerprint) => void): () => void };
   passiveStore?: IPassiveSignalStore;
+  trafficSource?: ITrafficSource;
+  trafficMonitor?: TrafficMonitor;
+  dnsActivityLog?: DnsActivityLog;
 }
 
 /**
@@ -31,7 +39,8 @@ export interface BackgroundWorkerDeps {
  *  1) re-enrich when a new DHCP fingerprint arrives;
  *  2) periodic sweep for devices with uncaptured fingerprints;
  *  3) periodic light scan (ping + ARP only);
- *  4) emit device.changed / device.new over the event bus (→ WebSocket).
+ *  4) background port rescan for stale online devices;
+ *  5) emit device.changed / device.new over the event bus (→ WebSocket).
  */
 export class BackgroundWorker {
   private enrichTimer: ReturnType<typeof setInterval> | null = null;
@@ -95,7 +104,9 @@ export class BackgroundWorker {
     if (!device) return;
     if (
       !this.deps.enrichment.needsPassiveEnrichment(device) &&
-      !this.deps.enrichment.needsEnrichment(device)
+      !this.deps.enrichment.needsEnrichment(device) &&
+      !this.deps.enrichment.needsTrafficEnrichment(device) &&
+      !this.deps.enrichment.needsDnsEnrichment(device)
     ) {
       return;
     }
@@ -112,13 +123,20 @@ export class BackgroundWorker {
     if (this.enrichRunning || this.deps.sessions.activeScan()) return;
     this.enrichRunning = true;
     try {
+      await this.refreshTraffic();
       const devices = await this.deps.repo.list();
       for (const device of devices) {
-        if (!this.deps.enrichment.needsEnrichment(device) && !this.deps.enrichment.needsPassiveEnrichment(device)) {
+        if (
+          !this.deps.enrichment.needsEnrichment(device) &&
+          !this.deps.enrichment.needsPassiveEnrichment(device) &&
+          !this.deps.enrichment.needsTrafficEnrichment(device) &&
+          !this.deps.enrichment.needsDnsEnrichment(device)
+        ) {
           continue;
         }
         await this.enrichOne(device.id, BACKGROUND_ENRICH_SCAN_ID);
       }
+      await this.rescanStalePorts();
     } catch (error) {
       this.deps.logger.warn(
         { error: error instanceof Error ? error.message : error },
@@ -129,6 +147,57 @@ export class BackgroundWorker {
     }
   }
 
+  private async rescanStalePorts(): Promise<void> {
+    const { config, enrichment, repo, fingerprint, elevated, logger } = this.deps;
+    if (!config.BACKGROUND_PORT_RESCAN_ENABLED) return;
+
+    const maxAgeMs = config.BACKGROUND_PORT_RESCAN_MAX_AGE_MS;
+    const batch = config.BACKGROUND_PORT_RESCAN_BATCH;
+    const devices = await repo.list();
+    const stale = devices.filter((d) => enrichment.needsPortRescan(d, maxAgeMs)).slice(0, batch);
+    if (!stale.length) return;
+
+    const cidr = this.deps.detectPrimaryCidr();
+    const gatewayIp = cidr ? this.inferGateway(cidr) : null;
+
+    for (const device of stale) {
+      try {
+        const fp = await fingerprint.execute({
+          ip: device.ip,
+          depth: 'standard',
+          osDetection: elevated,
+          timeoutMs: 30_000,
+        });
+        const result = await enrichment.enrichFromFingerprint(device, fp, gatewayIp);
+        const { device: updated, isNew, changes, anomalies } = result;
+        this.deps.events.emit({
+          type: 'device.classified',
+          payload: { scanId: BACKGROUND_ENRICH_SCAN_ID, device: updated },
+        });
+        if (isNew) {
+          this.deps.events.emit({
+            type: 'device.new',
+            payload: { scanId: BACKGROUND_ENRICH_SCAN_ID, device: updated },
+          });
+        } else if (changes.length) {
+          this.deps.events.emit({
+            type: 'device.changed',
+            payload: { scanId: BACKGROUND_ENRICH_SCAN_ID, device: updated, changes },
+          });
+          logger.info({ mac: updated.mac, changes }, 'background port rescan updated device');
+        }
+        for (const anomaly of anomalies) {
+          emitDeviceAnomalies(this.deps.events, BACKGROUND_ENRICH_SCAN_ID, updated, [anomaly], this.deps.dnsActivityLog);
+        }
+      } catch (error) {
+        logger.warn(
+          { ip: device.ip, error: error instanceof Error ? error.message : error },
+          'background port rescan failed',
+        );
+      }
+    }
+  }
+
   private async enrichOne(deviceId: string, scanId: string): Promise<void> {
     const device = await this.deps.repo.findById(deviceId);
     if (!device) return;
@@ -136,7 +205,7 @@ export class BackgroundWorker {
     const cidr = this.deps.detectPrimaryCidr();
     const gatewayIp = cidr ? this.inferGateway(cidr) : null;
     const result = await this.deps.enrichment.enrichDevice(device, gatewayIp);
-    const { device: updated, isNew, changes } = result;
+    const { device: updated, isNew, changes, anomalies } = result;
 
     this.deps.events.emit({ type: 'device.classified', payload: { scanId, device: updated } });
     if (isNew) {
@@ -144,6 +213,9 @@ export class BackgroundWorker {
     } else if (changes.length) {
       this.deps.events.emit({ type: 'device.changed', payload: { scanId, device: updated, changes } });
       this.deps.logger.info({ mac: updated.mac, changes }, 'background enrichment updated device');
+    }
+    for (const anomaly of anomalies) {
+      emitDeviceAnomalies(this.deps.events, scanId, updated, [anomaly], this.deps.dnsActivityLog);
     }
   }
 
@@ -179,5 +251,19 @@ export class BackgroundWorker {
     if (!isOk(parsed)) return null;
     const first = [...parsed.value.hosts(1)][0];
     return first ? first.value : null;
+  }
+
+  private async refreshTraffic(): Promise<void> {
+    const { trafficSource, trafficMonitor, logger } = this.deps;
+    if (!trafficSource || !trafficMonitor) return;
+    try {
+      const count = await trafficMonitor.refresh(trafficSource);
+      logger.debug({ count, source: trafficSource.name }, 'background traffic sample');
+    } catch (error) {
+      logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'background traffic sample failed',
+      );
+    }
   }
 }

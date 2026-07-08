@@ -1,9 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { CveFinding, DnsProfile, Traffic } from '@netscanner/contracts';
 import { api } from '../lib/api';
 import { useStore } from '../lib/store';
 import { deviceMeta } from '../lib/device-ui';
+
+const fmtBytes = (n: number) =>
+  n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 1e3 ? `${(n / 1e3).toFixed(0)} KB` : `${n} B`;
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -11,6 +15,28 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
       <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
       <div className="text-sm text-slate-100">{value ?? '—'}</div>
     </div>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="group mt-5" open={defaultOpen}>
+      <summary className="mb-2 cursor-pointer list-none text-sm font-semibold text-slate-200 marker:content-none [&::-webkit-details-marker]:hidden">
+        <span className="inline-flex items-center gap-2">
+          <span className="text-muted transition group-open:rotate-90">▸</span>
+          {title}
+        </span>
+      </summary>
+      {children}
+    </details>
   );
 }
 
@@ -115,6 +141,45 @@ export function DeviceDrawer() {
           </button>
         </div>
 
+        {(() => {
+          const reasons = device.signals?.classification as string[] | undefined;
+          const evidence = device.signals?.classificationEvidence as
+            | { deviceType: string; posterior: number; reasons: string[] }[]
+            | undefined;
+          if ((!reasons?.length) && (!evidence?.length)) return null;
+          return (
+            <CollapsibleSection title="Classification evidence">
+              {evidence && evidence.length > 0 && (
+                <div className="mb-2 space-y-1">
+                  {evidence.map((row) => (
+                    <div
+                      key={row.deviceType}
+                      className="rounded-lg border border-edge bg-panelup px-3 py-1.5 text-xs"
+                    >
+                      <div className="flex justify-between text-slate-200">
+                        <span>{row.deviceType}</span>
+                        <span className="text-muted">{Math.round(row.posterior * 100)}% posterior</span>
+                      </div>
+                      {row.reasons.map((r) => (
+                        <div key={r} className="mt-0.5 text-muted">
+                          {r}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {reasons && reasons.length > 0 && (
+                <ul className="list-inside list-disc space-y-0.5 text-xs text-muted">
+                  {reasons.map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleSection>
+          );
+        })()}
+
         <div className="grid grid-cols-2 gap-4">
           <Field label="IP" value={<span className="font-mono">{device.ip}</span>} />
           <Field
@@ -176,6 +241,40 @@ export function DeviceDrawer() {
           <Field label="Last seen" value={new Date(device.lastSeen).toLocaleString()} />
         </div>
 
+        {(() => {
+          const ips = device.signals?.infrastructureIps as string[] | undefined;
+          const aliases = device.signals?.infrastructureAliases as
+            | { ip: string; mac: string | null; interfaceLabel: string | null }[]
+            | undefined;
+          if (!ips?.length || ips.length <= 1) return null;
+          const labelByIp = new Map(
+            (aliases ?? []).map((a) => [a.ip, a.interfaceLabel] as const),
+          );
+          return (
+            <section className="mt-5">
+              <h3 className="mb-2 text-sm font-semibold text-slate-200">Interface IPs</h3>
+              <p className="mb-2 text-xs text-muted">
+                Multi-homed appliance — one logical device, several VLAN/WAN interfaces.
+              </p>
+              <div className="space-y-1">
+                {ips.map((ip) => (
+                  <div
+                    key={ip}
+                    className="flex items-center justify-between rounded-lg border border-edge bg-panelup px-3 py-1.5 text-xs"
+                  >
+                    <span className="font-mono">{ip}</span>
+                    <span className="text-muted">
+                      {ip === device.ip
+                        ? 'primary'
+                        : labelByIp.get(ip) ?? 'interface'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+        })()}
+
         <section className="mt-5">
           <h3 className="mb-2 text-sm font-semibold text-slate-200">Open services ({device.services.length})</h3>
           <div className="space-y-1">
@@ -209,6 +308,112 @@ export function DeviceDrawer() {
             </div>
           </section>
         )}
+
+        {(() => {
+          const cves = (device.signals?.cveFindings as CveFinding[] | undefined) ?? [];
+          const risk = typeof device.signals?.riskScore === 'number' ? device.signals.riskScore : null;
+          if (cves.length === 0 && (risk == null || risk === 0)) return null;
+          return (
+            <section className="mt-5">
+              <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-200">
+                Vulnerabilities
+                {risk != null && (
+                  <span
+                    className={`badge ${risk >= 50 ? 'bg-bad/20 text-bad' : risk >= 20 ? 'bg-warn/20 text-warn' : 'bg-good/20 text-good'}`}
+                  >
+                    risk {risk}
+                  </span>
+                )}
+              </h3>
+              <div className="space-y-1">
+                {cves.map((c) => (
+                  <a
+                    key={c.cveId}
+                    href={c.url}
+                    target="_blank"
+                    rel="noopener"
+                    className="block rounded-lg border border-edge bg-panelup px-3 py-1.5 text-xs hover:border-accent"
+                  >
+                    <span className="badge mr-2 bg-bad/20 text-bad">{c.severity}</span>
+                    <span className="font-mono">{c.cveId}</span>{' '}
+                    {c.confidence === 'fuzzy' && <span className="text-muted">(potential)</span>}
+                    <div className="mt-0.5 text-muted">{c.summary}</div>
+                  </a>
+                ))}
+                {cves.length === 0 && <div className="text-xs text-muted">No known CVEs matched.</div>}
+              </div>
+            </section>
+          );
+        })()}
+
+        {(() => {
+          const dns = device.signals?.dnsProfile as DnsProfile | undefined;
+          const recent = device.signals?.dnsRecentQueries;
+          const queryList = Array.isArray(recent) ? recent.map(String) : [];
+          const topDomains =
+            dns?.topDomains?.length
+              ? dns.topDomains
+              : queryList.map((domain) => ({ domain, count: 1, vendor: undefined, category: undefined }));
+          if (topDomains.length === 0) return null;
+          return (
+            <CollapsibleSection title="Network activity (DNS)">
+              {dns?.categories && dns.categories.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {dns.categories.map((c) => (
+                    <span key={c} className="badge bg-panelup text-slate-300">
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="space-y-1">
+                {topDomains.slice(0, 25).map((d) => (
+                  <div
+                    key={d.domain}
+                    className="flex items-center justify-between rounded-lg border border-edge bg-panelup px-3 py-1 text-xs"
+                  >
+                    <span className="font-mono">{d.domain}</span>
+                    <span className="text-muted">
+                      {[d.vendor ?? d.category, d.count > 1 ? `${d.count}×` : null].filter(Boolean).join(' · ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {dns?.externalEndpoints != null && (
+                <div className="mt-1 text-[10px] text-muted">
+                  {dns.externalEndpoints} external domains contacted
+                </div>
+              )}
+              {!dns && queryList.length > 0 && (
+                <div className="mt-1 text-[10px] text-muted">From passive DNS capture — profile pending enrichment.</div>
+              )}
+            </CollapsibleSection>
+          );
+        })()}
+
+        {(() => {
+          const t = device.signals?.traffic as Traffic | undefined;
+          if (!t) return null;
+          return (
+            <section className="mt-5">
+              <h3 className="mb-2 text-sm font-semibold text-slate-200">Traffic</h3>
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded-lg border border-edge bg-panelup px-3 py-2">
+                  <div className="text-muted">In</div>
+                  {fmtBytes(t.bytesIn)}
+                </div>
+                <div className="rounded-lg border border-edge bg-panelup px-3 py-2">
+                  <div className="text-muted">Out</div>
+                  {fmtBytes(t.bytesOut)}
+                </div>
+                <div className="rounded-lg border border-edge bg-panelup px-3 py-2">
+                  <div className="text-muted">Rate</div>
+                  {(t.rateBps / 1000).toFixed(0)} kbps
+                </div>
+              </div>
+            </section>
+          );
+        })()}
 
         {showRouterAccess && (
           <section className="mt-5 space-y-2">

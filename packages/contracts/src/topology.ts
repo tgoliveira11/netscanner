@@ -43,6 +43,10 @@ export const TopologySsidSchema = z.object({
 export type TopologySsid = z.infer<typeof TopologySsidSchema>;
 
 export const TopologyResponseSchema = z.object({
+  /** Content hash — pass as `?since=` to skip rebuild when structure is unchanged. */
+  revision: z.string(),
+  /** When true, edges/nodes/vlans/ssids are omitted; client keeps its cached graph. */
+  unchanged: z.boolean().optional(),
   gatewayId: z.string().nullable(),
   edges: z.array(TopologyEdgeSchema),
   ssids: z.array(TopologySsidSchema),

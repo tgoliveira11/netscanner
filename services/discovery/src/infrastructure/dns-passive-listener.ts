@@ -1,12 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { Logger } from '@netscanner/logger';
 import type { IPassiveSignalStore } from '../domain/passive-signal-store.js';
-
-const QUERY_RE = /(\d+\.\d+\.\d+\.\d+)\.\d+ > (\d+\.\d+\.\d+\.\d+)\.\d+:.*\? ([\w.-]+)\./;
-
-/** Domains queried in normal browsing — not a device hostname. */
-const DNS_NOISE_RE =
-  /(?:^|\.)((google|gstatic|googleusercontent|googleapis|gvt\d|1e100|apple|icloud|apple-dns|mzstatic|cursor|brave|github|githubusercontent|linkedin|licdn|cloudflare|amazonaws|akamai|fastly|fbcdn|microsoft|office|live|azure|doubleclick|googlesyndication|google-analytics|fonts)\.(com|net|org|io|sh|ai))$/i;
+import { parseDnsTcpdumpLine } from './dns-tcpdump-line.js';
 
 /**
  * Passive DNS observer via tcpdump :53.
@@ -42,19 +37,14 @@ export class DnsPassiveListener {
   }
 
   private parseLine(line: string): void {
-    const q = QUERY_RE.exec(line);
-    if (!q) return;
-
-    const clientIp = q[1]!;
-    const query = q[3]!.replace(/\.$/, '').toLowerCase();
-    if (query.length < 2 || /^(localhost|local)$/i.test(query)) return;
-    if (DNS_NOISE_RE.test(query)) return;
+    const parsed = parseDnsTcpdumpLine(line);
+    if (!parsed) return;
 
     void this.store.ingest({
-      ip: clientIp,
+      ip: parsed.clientIp,
       source: 'dns-passive',
       signals: {
-        dnsRecentQueries: [query],
+        dnsRecentQueries: [parsed.query],
         dnsPassive: true,
       },
     });

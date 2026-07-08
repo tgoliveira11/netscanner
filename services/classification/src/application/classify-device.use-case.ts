@@ -1,6 +1,6 @@
 import { MacAddress, isOk, type IVendorLookup } from '@netscanner/kernel';
 import type { ConnectionType, OsGuess, SecurityFlag, ServiceInfo } from '@netscanner/contracts';
-import { ClassificationEngine } from '../domain/classification-engine.js';
+import { ClassificationEngine, type IClassificationEngine } from '../domain/classification-engine.js';
 import { SecurityAnalyzer } from '../domain/security-analyzer.js';
 import { resolveBrandModel, resolveOs } from '../domain/device-identity.js';
 import { inferConnection } from '../domain/connection-inference.js';
@@ -27,6 +27,7 @@ export interface ClassifyDeviceResult {
   connectionBasis: string;
   securityFlags: SecurityFlag[];
   reasons: string[];
+  classificationEvidence?: { deviceType: string; posterior: number; reasons: string[] }[];
 }
 
 /**
@@ -39,7 +40,7 @@ export interface ClassifyDeviceResult {
  */
 export class ClassifyDeviceUseCase {
   constructor(
-    private readonly engine: ClassificationEngine,
+    private readonly engine: IClassificationEngine,
     private readonly vendorLookup: IVendorLookup,
     private readonly security: SecurityAnalyzer,
   ) {}
@@ -91,6 +92,7 @@ export class ClassifyDeviceUseCase {
       connectionBasis: connection.basis,
       securityFlags: this.security.analyze(input.services),
       reasons,
+      classificationEvidence: outcome.evidence,
     };
   }
 

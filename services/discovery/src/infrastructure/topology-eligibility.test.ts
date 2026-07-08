@@ -13,7 +13,9 @@ const bridgeDevice = {
   deviceType: 'router' as const,
   connectionType: 'wifi' as const,
   signals: { connectionBasis: 'randomized/private MAC (a WiFi-only feature)' },
-} as Device;
+  // Partial fixture: the functions under test only read id/ip/mac/deviceType/
+  // connectionType/signals. Cast through unknown rather than stub every field.
+} as unknown as Device;
 
 const ctx = {
   localIfaces: [

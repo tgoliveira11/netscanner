@@ -43,7 +43,11 @@ export function resolveBrandModel(
     if (fromPath) model = fromPath;
   }
   if (!brand && upnpMfr) brand = normalizeBrandName(upnpMfr);
+  const snmpVendor = readSignal(signals, 'snmpOidVendor');
+  if (!brand && snmpVendor) brand = snmpVendor;
   if (!model && upnpModel) model = upnpModel;
+  const snmpModel = readSignal(signals, 'snmpOidModelHint');
+  if (!model && snmpModel) model = snmpModel;
   const mdnsModel = readSignal(signals, 'mdnsModel') || readSignal(signals, 'mdnsAppleModel');
   if (!model && mdnsModel) model = mdnsModel;
   const snmpDescr = readSignal(signals, 'snmpSysDescr');
@@ -164,6 +168,22 @@ export function resolveOs(
     add({
       os: { family: 'Windows', name: netbiosOs, accuracy: 60, source: 'inferred' },
       reason: `NetBIOS status "${netbiosOs}"`,
+    });
+  }
+
+  const p0fName = readSignal(signals, 'p0fOsName');
+  const p0fFamily = readSignal(signals, 'p0fOsFamily');
+  const p0fConf = signals['p0fOsConfidence'];
+  if (p0fName || p0fFamily) {
+    const acc = typeof p0fConf === 'number' ? p0fConf : 55;
+    add({
+      os: {
+        family: p0fFamily || p0fName,
+        name: p0fName || p0fFamily,
+        accuracy: acc,
+        source: 'inferred',
+      },
+      reason: readSignal(signals, 'p0fOsReason') ?? `p0f SYN stack (${p0fFamily || p0fName})`,
     });
   }
 

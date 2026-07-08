@@ -5,50 +5,61 @@ import type { IHostProbe, ProbeContext, RawHostSignal } from '../domain/host-pro
 const MQTT_CONNECT = Buffer.from([
   0x10, 0x0c, 0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x3c, 0x00, 0x00,
 ]);
-const COAP_GET = Buffer.from([0x40, 0x01, 0x12, 0x34, 0xb5, 0x77, 0x65, 0x6c, 0x6c, 0x2d, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x0b, 0x2e, 0x77, 0x65, 0x6c, 0x6c, 0x2d, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x03, 0x63, 0x6f, 0x72, 0x65]);
+const COAP_GET = Buffer.from([
+  0x40, 0x01, 0x12, 0x34, 0xb5, 0x77, 0x65, 0x6c, 0x6c, 0x2d, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x0b,
+  0x2e, 0x77, 0x65, 0x6c, 0x6c, 0x2d, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x03, 0x63, 0x6f, 0x72, 0x65,
+]);
 
-function probeTcp(ip: string, port: number, payload: Buffer, timeoutMs: number): Promise<boolean> {
+function probeMqtt(ip: string, timeoutMs: number): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
-    const socket = connect({ host: ip, port, timeout: timeoutMs }, () => {
-      socket.write(payload);
+    const extra: Record<string, unknown> = {};
+    const socket = connect({ host: ip, port: 1883, timeout: timeoutMs }, () => {
+      socket.write(MQTT_CONNECT);
     });
-      socket.on('data', () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-    socket.on('error', () => resolve(false));
+    socket.on('data', (chunk) => {
+      if (chunk[0] === 0x20) {
+        extra.mqttOpen = true;
+        extra.mqttConnack = `rc=${chunk[3] ?? 0}`;
+      }
+      socket.destroy();
+      resolve(extra);
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(extra);
+    });
+    socket.on('error', () => resolve(extra));
     setTimeout(() => {
       socket.destroy();
-      resolve(false);
+      resolve(extra);
     }, timeoutMs + 100);
   });
 }
 
-function probeUdp(ip: string, port: number, payload: Buffer, timeoutMs: number): Promise<boolean> {
+function probeCoap(ip: string, timeoutMs: number): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
+    const extra: Record<string, unknown> = {};
     const socket = createSocket('udp4');
     const timer = setTimeout(() => {
       socket.close();
-      resolve(false);
+      resolve(extra);
     }, timeoutMs);
-    socket.on('message', () => {
+    socket.on('message', (msg) => {
       clearTimeout(timer);
+      extra.coapOpen = true;
+      extra.coapCode = msg[1] ?? 0;
       socket.close();
-      resolve(true);
+      resolve(extra);
     });
     socket.on('error', () => {
       clearTimeout(timer);
-      resolve(false);
+      resolve(extra);
     });
-    socket.send(payload, port, ip);
+    socket.send(COAP_GET, 5683, ip);
   });
 }
 
-/** Lightweight MQTT/CoAP discovery (Hue/Tuya often expose MQTT). */
+/** Lightweight MQTT/CoAP discovery with response parsing (Hue/Tuya/IoT). */
 export class ProtocolProbe implements IHostProbe {
   readonly name = 'protocol';
   readonly phase = 'enrich' as const;
@@ -58,9 +69,9 @@ export class ProtocolProbe implements IHostProbe {
     await Promise.allSettled(
       ips.map(async (ip) => {
         if (ctx.signal.aborted) return;
-        const extra: Record<string, unknown> = {};
-        if (await probeTcp(ip, 1883, MQTT_CONNECT, ctx.timeoutMs)) extra['mqttOpen'] = true;
-        if (await probeUdp(ip, 5683, COAP_GET, ctx.timeoutMs)) extra['coapOpen'] = true;
+        const mqtt = await probeMqtt(ip, ctx.timeoutMs);
+        const coap = await probeCoap(ip, ctx.timeoutMs);
+        const extra = { ...mqtt, ...coap };
         if (Object.keys(extra).length) emit({ ip, source: 'protocol', extra });
       }),
     );

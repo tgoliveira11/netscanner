@@ -4,6 +4,11 @@ import type { IDeviceRepository } from '../domain/device-repository.js';
 import type { StoredDevice } from '../domain/device-public.js';
 import { toPublicDevice } from '../domain/device-public.js';
 import { diffDevice } from '../domain/device-diff.js';
+import {
+  detectBehavioralAnomalies,
+  updateBaseline,
+  type BehavioralAnomaly,
+} from '../domain/behavioral-anomalies.js';
 
 /** Prefer the higher-confidence OS but keep version from either source. */
 function mergeOs(next: OsGuess | null, prev: OsGuess | null): OsGuess | null {
@@ -38,6 +43,7 @@ export interface UpsertResult {
   device: Device;
   isNew: boolean;
   changes: string[];
+  anomalies: BehavioralAnomaly[];
 }
 
 /**
@@ -63,9 +69,10 @@ export class UpsertDeviceUseCase {
     const stored = existing ? await this.repo.findStoredById(existing.id) : null;
 
     if (!stored) {
+      const fields = this.snapshotFields(snapshot);
       const device: Device = {
         id: uuid(),
-        ...this.snapshotFields(snapshot),
+        ...fields,
         label: null,
         notes: null,
         routerScrapeUser: null,
@@ -73,9 +80,20 @@ export class UpsertDeviceUseCase {
         firstSeen: now,
         lastSeen: now,
         isOnline: true,
+        signals: updateBaseline({
+          id: 'new',
+          ...fields,
+          label: null,
+          notes: null,
+          routerScrapeUser: null,
+          routerScrapePasswordSet: false,
+          firstSeen: now,
+          lastSeen: now,
+          isOnline: true,
+        } as Device),
       };
       await this.repo.save(device);
-      return { device: toPublicDevice(device as StoredDevice), isNew: true, changes: [] };
+      return { device: toPublicDevice(device as StoredDevice), isNew: true, changes: [], anomalies: [] };
     }
 
     const fields = this.snapshotFields(snapshot);
@@ -111,8 +129,10 @@ export class UpsertDeviceUseCase {
       isOnline: true,
     };
     const changes = diffDevice(stored, next);
+    const anomalies = detectBehavioralAnomalies(stored, next);
+    next.signals = updateBaseline({ ...next, signals: next.signals });
     await this.repo.save(next);
-    return { device: toPublicDevice(next), isNew: false, changes };
+    return { device: toPublicDevice(next), isNew: false, changes, anomalies };
   }
 
   private snapshotFields(s: DeviceSnapshot) {

@@ -6,8 +6,18 @@ import type {
 } from '@netscanner/discovery';
 import { mergePassiveSignals, buildFingerbankQuery } from '@netscanner/discovery';
 import type { IConnectionSource } from '@netscanner/contracts';
-import { ClassifyDeviceUseCase } from '@netscanner/classification';
-import type { SnmpEnricher } from '@netscanner/scanner';
+import {
+  ClassifyDeviceUseCase,
+  analyzeDns,
+  dnsVendorHints,
+  dnsSecurityFlags,
+  buildCpes,
+  StaticCveResolver,
+  scoreRisk,
+  cvesToSecurityFlags,
+  type ICveResolver,
+} from '@netscanner/classification';
+import type { SnmpEnricher, TrafficMonitor, HostFingerprint } from '@netscanner/scanner';
 import { applyConnectionSignals } from './connection-signals.js';
 import {
   UpsertDeviceUseCase,
@@ -25,6 +35,10 @@ export interface DeviceEnrichmentDeps {
   passiveStore?: IPassiveSignalStore;
   snmp?: SnmpEnricher;
   connectionSource?: IConnectionSource;
+  /** Latest per-IP traffic from pfSense (or other ITrafficSource). */
+  trafficMonitor?: TrafficMonitor;
+  /** Known-vulnerability resolver (#2). Defaults to the offline curated set. */
+  cveResolver?: ICveResolver;
 }
 
 export interface EnrichHostInput {
@@ -36,10 +50,14 @@ export interface EnrichHostInput {
   latencyMs: number | null;
   signals: Record<string, unknown>;
   gatewayIp: string | null;
+  vendorFromScan?: string | null;
 }
 
 export class DeviceEnrichmentService {
-  constructor(private readonly deps: DeviceEnrichmentDeps) {}
+  private readonly cve: ICveResolver;
+  constructor(private readonly deps: DeviceEnrichmentDeps) {
+    this.cve = deps.cveResolver ?? new StaticCveResolver();
+  }
 
   mergePassiveSignals(
     ip: string,
@@ -110,6 +128,19 @@ export class DeviceEnrichmentService {
 
     mergedSignals = applyConnectionSignals(input.mac, mergedSignals, this.deps.connectionSource);
 
+    // #1 DNS intelligence: analyze passively-observed query names into a profile
+    // BEFORE classification so the DnsClassificationRule can vote on it.
+    const dnsQueries = mergedSignals['dnsRecentQueries'];
+    if (Array.isArray(dnsQueries) && dnsQueries.length > 0) {
+      const dnsProfile = analyzeDns(dnsQueries.map(String));
+      mergedSignals = {
+        ...mergedSignals,
+        dnsProfile,
+        dnsCategories: dnsProfile.categories,
+        dnsVendorHints: dnsVendorHints(dnsProfile),
+      };
+    }
+
     const nmapOs = input.os?.source === 'nmap' ? input.os : null;
 
     const classification = this.deps.classify.execute({
@@ -118,10 +149,31 @@ export class DeviceEnrichmentService {
       hostname,
       os: nmapOs,
       services: input.services,
-      vendorFromScan: null,
+      vendorFromScan: input.vendorFromScan ?? null,
       gatewayIp: input.gatewayIp,
       signals: mergedSignals,
     });
+
+    // #2 CVE: match the resolved identity (OS / brand+model / service products)
+    // against the vulnerability DB; fold high-severity ones into securityFlags.
+    const cves = this.cve.match(
+      buildCpes({
+        brand: classification.brand,
+        model: classification.model,
+        os: classification.os,
+        services: input.services,
+      }),
+    );
+    const dnsProfile = mergedSignals['dnsProfile'];
+    const traffic = this.deps.trafficMonitor?.get(input.ip);
+    if (traffic) mergedSignals = { ...mergedSignals, traffic };
+
+    const securityFlags = [
+      ...classification.securityFlags,
+      ...(dnsProfile ? dnsSecurityFlags(dnsProfile as never) : []),
+      ...cvesToSecurityFlags(cves),
+    ];
+    const riskScore = scoreRisk(cves, securityFlags);
 
     return {
       ip: input.ip,
@@ -136,11 +188,14 @@ export class DeviceEnrichmentService {
       connectionType: classification.connectionType,
       services: input.services,
       latencyMs: input.latencyMs,
-      securityFlags: classification.securityFlags,
+      securityFlags,
       signals: {
         ...mergedSignals,
         connectionBasis: classification.connectionBasis,
         classification: classification.reasons,
+        classificationEvidence: classification.classificationEvidence,
+        cveFindings: cves,
+        riskScore,
         lastEnrichedAt: new Date().toISOString(),
       },
     };
@@ -160,6 +215,41 @@ export class DeviceEnrichmentService {
     return this.deps.upsert.execute(snapshot);
   }
 
+  async enrichFromFingerprint(
+    device: Device,
+    fp: HostFingerprint,
+    gatewayIp: string | null,
+    extraSignals: Record<string, unknown> = {},
+  ): Promise<UpsertResult> {
+    const signals = {
+      ...device.signals,
+      ...extraSignals,
+      ...(fp.signals ?? {}),
+      portScanAt: new Date().toISOString(),
+    };
+    const snapshot = await this.buildSnapshot({
+      ip: device.ip,
+      mac: device.mac,
+      hostname: fp.hostname ?? device.hostname,
+      services: fp.services,
+      os: fp.os ?? device.os,
+      latencyMs: device.latencyMs,
+      signals,
+      gatewayIp,
+      vendorFromScan: fp.vendorFromScan ?? null,
+    });
+    return this.deps.upsert.execute(snapshot);
+  }
+
+  needsPortRescan(device: Device, maxAgeMs: number): boolean {
+    if (!device.isOnline) return false;
+    const openCount = device.services.filter((s) => s.state === 'open').length;
+    const scannedAt = device.signals['portScanAt'] ?? (openCount > 0 ? device.lastSeen : null);
+    if (!scannedAt) return true;
+    const ageMs = Date.now() - Date.parse(String(scannedAt));
+    return !Number.isFinite(ageMs) || ageMs >= maxAgeMs;
+  }
+
   needsEnrichment(device: Device): boolean {
     if (this.needsPassiveEnrichment(device)) return true;
     if (!device.mac) return false;
@@ -174,7 +264,8 @@ export class DeviceEnrichmentService {
         passive['mdnsModel'] ||
         passive['ja3Hash'] ||
         passive['mqttOpen'] ||
-        passive['ipv6Duid'];
+        passive['ipv6Duid'] ||
+        passive['p0fOsName'];
       if (hasPassiveFbHints || dhcp) return true;
     }
     if (!device.os || !device.model) return true;
@@ -195,13 +286,38 @@ export class DeviceEnrichmentService {
     const store = this.deps.passiveStore;
     if (!store) return false;
     const passive = this.mergePassiveSignals(device.ip, device.mac, {});
-    const skipKeys = new Set(['dnsQuery', 'dnsRecentQueries', 'dnsPassive']);
+    const skipKeys = new Set(['dnsQuery', 'dnsPassive']);
     for (const [key, value] of Object.entries(passive)) {
       if (skipKeys.has(key)) continue;
       if (value == null || value === '') continue;
       if (device.signals[key] !== value) return true;
     }
     return false;
+  }
+
+  needsTrafficEnrichment(device: Device): boolean {
+    const cur = this.deps.trafficMonitor?.get(device.ip);
+    if (!cur) return false;
+    const stored = device.signals['traffic'];
+    if (!stored || typeof stored !== 'object') return true;
+    const s = stored as Record<string, unknown>;
+    const peersEqual =
+      JSON.stringify(s['topPeers'] ?? []) === JSON.stringify(cur.topPeers ?? []);
+    return (
+      s['bytesIn'] !== cur.bytesIn ||
+      s['bytesOut'] !== cur.bytesOut ||
+      s['rateBps'] !== cur.rateBps ||
+      s['connections'] !== cur.connections ||
+      !peersEqual
+    );
+  }
+
+  needsDnsEnrichment(device: Device): boolean {
+    const passive = this.mergePassiveSignals(device.ip, device.mac, {});
+    const incoming = passive['dnsRecentQueries'];
+    if (!Array.isArray(incoming) || incoming.length === 0) return false;
+    const stored = device.signals['dnsRecentQueries'];
+    return JSON.stringify(stored ?? []) !== JSON.stringify(incoming);
   }
 }
 

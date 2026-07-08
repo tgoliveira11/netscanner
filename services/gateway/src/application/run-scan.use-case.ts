@@ -7,20 +7,19 @@ import {
   DiscoverHostsUseCase,
   mapPool,
   mergePassiveSignals,
-  buildFingerbankQuery,
   type IRouterLeaseSource,
   type RouterLease,
   type IDhcpFingerprintSource,
-  type IDeviceFingerprintResolver,
   type IPassiveSignalStore,
   resolvePfSenseTelemetry,
 } from '@netscanner/discovery';
-import { FingerprintHostUseCase, type IHostEnricher, type ScanDepth, type SnmpEnricher } from '@netscanner/scanner';
-import { ClassifyDeviceUseCase } from '@netscanner/classification';
-import { UpsertDeviceUseCase, type DeviceSnapshot, type IDeviceRepository } from '@netscanner/inventory';
+import { FingerprintHostUseCase, type IHostEnricher, type ScanDepth, type ITrafficSource, type TrafficMonitor } from '@netscanner/scanner';
+import { UpsertDeviceUseCase, type IDeviceRepository } from '@netscanner/inventory';
 import type { ScanSessionStore } from './scan-session.js';
 import { DeviceEnrichmentService } from './device-enrichment.service.js';
 import { applyConnectionSignals } from './connection-signals.js';
+import { emitDeviceUpsertEvents } from './scan-events.js';
+import type { DnsActivityLog } from './dns-activity-log.js';
 import type { Device } from '@netscanner/contracts';
 
 export interface RunScanDeps {
@@ -34,12 +33,10 @@ export interface RunScanDeps {
   leaseSource?: IRouterLeaseSource;
   /** Optional passive DHCP fingerprint source (feeds Fingerbank). */
   dhcpSource?: IDhcpFingerprintSource;
-  /** Optional Fingerbank resolver for exact device model/OS. */
-  fingerbank?: IDeviceFingerprintResolver;
   passiveStore?: IPassiveSignalStore;
-  snmp?: SnmpEnricher;
   connectionSource?: IConnectionSource;
-  classify: ClassifyDeviceUseCase;
+  trafficSource?: ITrafficSource;
+  trafficMonitor?: TrafficMonitor;
   upsert: UpsertDeviceUseCase;
   repo: IDeviceRepository;
   sessions: ScanSessionStore;
@@ -47,6 +44,7 @@ export interface RunScanDeps {
   logger: Logger;
   config: AppConfig;
   elevated: boolean;
+  dnsActivityLog?: DnsActivityLog;
 }
 
 const DEPTH_BY_TYPE: Record<ScanType, ScanDepth> = {
@@ -89,6 +87,7 @@ export class RunScanUseCase {
     const gatewayIp = this.inferGateway(cidrs[0]!);
 
     const leases = await this.fetchLeases();
+    await this.refreshTraffic();
     const pfSenseSignals = this.pfSenseSignalExtras();
     if (this.deps.connectionSource) {
       try {
@@ -160,7 +159,7 @@ export class RunScanUseCase {
             ip: host.ip,
             depth,
             osDetection: depth !== 'quick' && this.deps.elevated,
-            timeoutMs: depth === 'deep' ? 60000 : depth === 'standard' ? 30000 : 15000,
+            timeoutMs: depth === 'deep' ? 120_000 : depth === 'standard' ? 30_000 : 15_000,
           });
 
           const enrichment = await this.deps.enricher.enrich(host.ip, fp.services, host.signals);
@@ -185,12 +184,7 @@ export class RunScanUseCase {
           if (lease?.description) mergedSignals['pfsenseDescription'] = lease.description;
           Object.assign(mergedSignals, pfSenseSignals);
           mergedSignals = applyConnectionSignals(mac, mergedSignals, this.deps.connectionSource);
-
-          const openPorts = new Set(fp.services.filter((svc) => svc.state === 'open').map((svc) => svc.port));
-          if (this.deps.snmp && (openPorts.has(161) || host.ip === subnetGateway)) {
-            const snmp = await this.deps.snmp.query(host.ip);
-            if (snmp) Object.assign(mergedSignals, this.deps.snmp.signalsFrom(snmp));
-          }
+          mergedSignals['portScanAt'] = new Date().toISOString();
 
           const hostname =
             lease?.hostname ??
@@ -205,48 +199,21 @@ export class RunScanUseCase {
             ptrMap.get(host.ip) ??
             (await reverseDns(host.ip));
 
-          const fb = await this.resolveFingerbank(mac, hostname, mergedSignals);
-          if (fb) Object.assign(mergedSignals, fb);
-
-          const classification = this.deps.classify.execute({
+          const snapshot = await this.deps.enrichment.buildSnapshot({
             ip: host.ip,
             mac,
             hostname,
-            os: fp.os,
             services: fp.services,
-            vendorFromScan: fp.vendorFromScan ?? enrichment.vendor ?? null,
-            gatewayIp: subnetGateway,
+            os: fp.os,
+            latencyMs: host.latencyMs,
             signals: mergedSignals,
+            gatewayIp: subnetGateway,
+            vendorFromScan: fp.vendorFromScan ?? enrichment.vendor ?? null,
           });
 
-          const snapshot: DeviceSnapshot = {
-            ip: host.ip,
-            mac,
-            vendor: classification.vendor,
-            brand: classification.brand,
-            model: classification.model,
-            hostname,
-            deviceType: classification.deviceType as DeviceSnapshot['deviceType'],
-            confidence: classification.confidence,
-            os: classification.os,
-            connectionType: classification.connectionType,
-            services: fp.services,
-            latencyMs: host.latencyMs,
-            securityFlags: classification.securityFlags,
-            signals: {
-              ...mergedSignals,
-              connectionBasis: classification.connectionBasis,
-              classification: classification.reasons,
-            },
-          };
-
-          const { device, isNew, changes } = await this.deps.upsert.execute(snapshot);
-          seenIds.push(device.id);
-
-          events.emit({ type: 'device.classified', payload: { scanId, device } });
-          if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
-          else if (changes.length)
-            events.emit({ type: 'device.changed', payload: { scanId, device, changes } });
+          const result = await this.deps.upsert.execute(snapshot);
+          seenIds.push(result.device.id);
+          emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
 
           const prog = this.progress(scanId, {
             devicesClassified: (sessions.get(scanId)?.devicesClassified ?? 0) + 1,
@@ -264,47 +231,28 @@ export class RunScanUseCase {
           source: 'pfsense-lease',
           ...pfSenseSignals,
         };
-        const fb = await this.resolveFingerbank(lease.mac, lease.hostname, signals);
-        if (fb) Object.assign(signals, fb);
-        const classification = this.deps.classify.execute({
+        const snapshot = await this.deps.enrichment.buildSnapshot({
           ip: lease.ip,
           mac: lease.mac,
           hostname: lease.hostname,
+          services: [],
           os: null,
-          services: [],
-          vendorFromScan: null,
-          gatewayIp,
-          signals,
-        });
-        const snapshot: DeviceSnapshot = {
-          ip: lease.ip,
-          mac: lease.mac,
-          vendor: classification.vendor,
-          brand: classification.brand,
-          model: classification.model,
-          hostname: lease.hostname,
-          deviceType: classification.deviceType as DeviceSnapshot['deviceType'],
-          confidence: classification.confidence,
-          os: classification.os,
-          connectionType: classification.connectionType,
-          services: [],
           latencyMs: null,
-          securityFlags: classification.securityFlags,
-          signals: {
-            ...signals,
-            connectionBasis: classification.connectionBasis,
-            classification: classification.reasons,
-          },
-        };
-        const { device, isNew } = await this.deps.upsert.execute(snapshot);
-        seenIds.push(device.id);
-        events.emit({ type: 'device.classified', payload: { scanId, device } });
-        if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
+          signals,
+          gatewayIp,
+        });
+        const result = await this.deps.upsert.execute(snapshot);
+        seenIds.push(result.device.id);
+        emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
       }
 
       const offline = await this.deps.repo.markOfflineExcept(seenIds);
       for (const deviceId of offline) {
-        events.emit({ type: 'device.offline', payload: { deviceId } });
+        const device = await this.deps.repo.findById(deviceId);
+        events.emit({
+          type: 'device.offline',
+          payload: { deviceId, device: device ?? undefined },
+        });
       }
 
       const done = this.progress(scanId, {
@@ -364,6 +312,7 @@ export class RunScanUseCase {
       events.emit({ type: 'scan.started', payload: sessions.get(scanId)! });
 
       const leases = await this.fetchLeases();
+      await this.refreshTraffic();
       const pfSenseSignals = this.pfSenseSignalExtras();
       const leaseByMac = new Map<string, RouterLease>();
       const leaseByIp = new Map<string, RouterLease>();
@@ -425,13 +374,9 @@ export class RunScanUseCase {
             gatewayIp,
           });
 
-          const { device, isNew, changes } = await this.deps.upsert.execute(snapshot);
-          seenIds.push(device.id);
-
-          events.emit({ type: 'device.classified', payload: { scanId, device } });
-          if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
-          else if (changes.length)
-            events.emit({ type: 'device.changed', payload: { scanId, device, changes } });
+          const result = await this.deps.upsert.execute(snapshot);
+          seenIds.push(result.device.id);
+          emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
 
           const prog = this.progress(scanId, {
             devicesClassified: (sessions.get(scanId)?.devicesClassified ?? 0) + 1,
@@ -467,15 +412,18 @@ export class RunScanUseCase {
           signals,
           gatewayIp,
         });
-        const { device, isNew } = await this.deps.upsert.execute(snapshot);
-        seenIds.push(device.id);
-        events.emit({ type: 'device.classified', payload: { scanId, device } });
-        if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
+        const result = await this.deps.upsert.execute(snapshot);
+        seenIds.push(result.device.id);
+        emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
       }
 
       const offline = await this.deps.repo.markOfflineExcept(seenIds);
       for (const deviceId of offline) {
-        events.emit({ type: 'device.offline', payload: { deviceId } });
+        const device = await this.deps.repo.findById(deviceId);
+        events.emit({
+          type: 'device.offline',
+          payload: { deviceId, device: device ?? undefined },
+        });
       }
 
       const done = this.progress(scanId, {
@@ -492,41 +440,41 @@ export class RunScanUseCase {
     }
   }
 
-  /** Resolve exact device identity via Fingerbank (DHCP fingerprint + MAC/hostname). */
-  private async resolveFingerbank(
-    mac: string | null,
-    hostname: string | null,
-    signals: Record<string, unknown>,
-  ): Promise<Record<string, unknown> | null> {
-    if (!this.deps.fingerbank) return null;
-    const fp = mac ? this.deps.dhcpSource?.get(mac) : undefined;
-    const query = buildFingerbankQuery(mac, hostname, signals, fp);
-    if (!query.dhcpFingerprint && !query.mac && !query.userAgents?.length && !query.dhcpv6Fingerprint) {
-      return null;
+  /** Refresh pfSense (or other) traffic samples before classifying hosts. */
+  private async refreshTraffic(): Promise<void> {
+    const { trafficSource, trafficMonitor, logger } = this.deps;
+    if (!trafficSource || !trafficMonitor) return;
+    try {
+      const count = await trafficMonitor.refresh(trafficSource);
+      logger.debug({ count, source: trafficSource.name }, 'traffic sample refreshed');
+    } catch (error) {
+      logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'traffic sample failed (continuing)',
+      );
     }
-    const res = await this.deps.fingerbank.resolve(query);
-    if (!res) return null;
-    return {
-      fingerbankDevice: res.deviceName,
-      fingerbankPath: res.devicePath,
-      fingerbankVersion: res.version,
-      fingerbankScore: res.score,
-    };
   }
 
   /** Adaptive depth: skip deep probes on well-known inventory rows. */
   private async resolveDepth(ip: string, mac: string | null, scanType: ScanType): Promise<ScanDepth> {
     const base = DEPTH_BY_TYPE[scanType];
-    if (!this.deps.config.ADAPTIVE_SCAN_ENABLED || scanType === 'quick') return base;
+    if (!this.deps.config.ADAPTIVE_SCAN_ENABLED || scanType === 'quick' || scanType === 'deep') {
+      return base;
+    }
 
     const existing: Device | null =
       (mac ? await this.deps.repo.findByMac(mac) : null) ?? (await this.deps.repo.findByIp(ip));
     if (!existing) return base;
 
+    const scannedAt = existing.signals['portScanAt'] ?? existing.lastSeen;
+    const portAgeMs = Date.now() - Date.parse(String(scannedAt));
+    const recentPortScan = Number.isFinite(portAgeMs) && portAgeMs < this.deps.config.BACKGROUND_PORT_RESCAN_MAX_AGE_MS;
+
     const known =
-      existing.classificationConfidence >= 0.7 &&
+      existing.classificationConfidence >= 0.85 &&
       Boolean(existing.os || existing.model) &&
-      existing.services.filter((s) => s.state === 'open').length >= 2;
+      existing.services.filter((s) => s.state === 'open').length >= 4 &&
+      recentPortScan;
     return known ? 'quick' : base;
   }
 

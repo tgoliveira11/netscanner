@@ -14,6 +14,15 @@ import { registerAdminRoutes } from './admin-routes.js';
 
 const VERSION = '0.1.0';
 
+function hostFromUrl(baseUrl: string): string {
+  if (!baseUrl) return '';
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return baseUrl.replace(/^https?:\/\//, '').split('/')[0] ?? '';
+  }
+}
+
 /**
  * REST surface for the dashboard. Controllers stay thin: validate input (zod),
  * delegate to a use case, map the result to a DTO. No business logic here (SRP).
@@ -178,10 +187,14 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
 
   app.get('/api/devices', async (request) => {
     const q = request.query as Record<string, string | undefined>;
+    const preferredInfrastructureIp =
+      hostFromUrl(c.config.PFSENSE_URL ?? '') || c.config.ROUTER_SNMP_HOST || null;
     const devices = await c.listDevices.execute({
       search: q.search,
       deviceType: q.type,
       onlineOnly: q.online === 'true',
+      collapseInfrastructureAliases: q.aliases !== 'true',
+      preferredInfrastructureIp,
     });
     return { devices, total: devices.length };
   });
@@ -193,7 +206,30 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     return { device };
   });
 
-  app.get('/api/topology', async () => c.buildTopology.execute());
+  app.get('/api/topology', async (request) => {
+    const since = (request.query as { since?: string }).since;
+    return c.buildTopology.execute(since ? { since } : undefined);
+  });
+
+  app.get('/api/relations', async () => {
+    let devices = await c.listDevices.execute({ collapseInfrastructureAliases: true });
+    if (c.trafficMonitor) {
+      devices = devices.map((d) => {
+        const live = c.trafficMonitor!.get(d.ip);
+        if (!live) return d;
+        return { ...d, signals: { ...d.signals, traffic: live } };
+      });
+    }
+    const { buildDeviceRelations } = await import('../application/build-relations.use-case.js');
+    const passiveDnsByIp = (ip: string): string[] => {
+      const raw = c.passiveStore?.get(ip)?.dnsRecentQueries;
+      return Array.isArray(raw) ? raw.map(String) : [];
+    };
+    return buildDeviceRelations(devices, {
+      passiveDnsByIp,
+      dnsLog: c.dnsActivityLog.list(),
+    });
+  });
 
   app.patch('/api/devices/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -206,7 +242,11 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
 
   app.get('/api/export', async (request, reply) => {
     const format = ExportFormat.catch('json').parse((request.query as { format?: string }).format);
-    const { body, contentType, filename } = await c.exportDevices.execute(format);
+    const preferredInfrastructureIp =
+      hostFromUrl(c.config.PFSENSE_URL ?? '') || c.config.ROUTER_SNMP_HOST || null;
+    const { body, contentType, filename } = await c.exportDevices.execute(format, {
+      preferredInfrastructureIp,
+    });
     return reply
       .header('content-type', contentType)
       .header('content-disposition', `attachment; filename="${filename}"`)

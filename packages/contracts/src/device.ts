@@ -66,6 +66,44 @@ export const SecurityFlagSchema = z.object({
 });
 export type SecurityFlag = z.infer<typeof SecurityFlagSchema>;
 
+/** Per-device DNS activity intelligence (#1). */
+export const DnsProfileSchema = z.object({
+  topDomains: z.array(
+    z.object({
+      domain: z.string(),
+      count: z.number(),
+      category: z.string().optional(),
+      vendor: z.string().optional(),
+    }),
+  ),
+  categories: z.array(z.string()),
+  externalEndpoints: z.number(),
+});
+export type DnsProfile = z.infer<typeof DnsProfileSchema>;
+
+/** A known-vulnerability finding matched to a device's model/firmware (#2). */
+export const CveFindingSchema = z.object({
+  cveId: z.string(),
+  cvss: z.number().nullable(),
+  severity: z.enum(['low', 'medium', 'high', 'critical']),
+  summary: z.string(),
+  url: z.string(),
+  cpe: z.string(),
+  /** "exact" when vendor+product+version matched; "fuzzy" otherwise. */
+  confidence: z.enum(['exact', 'fuzzy']),
+});
+export type CveFinding = z.infer<typeof CveFindingSchema>;
+
+/** Per-device traffic metrics (#3). */
+export const TrafficSchema = z.object({
+  bytesIn: z.number(),
+  bytesOut: z.number(),
+  rateBps: z.number(),
+  connections: z.number(),
+  topPeers: z.array(z.object({ ip: z.string(), bytes: z.number() })).optional(),
+});
+export type Traffic = z.infer<typeof TrafficSchema>;
+
 /** Full device record surfaced to the API and dashboard. */
 export const DeviceSchema = z.object({
   id: z.string(),
@@ -85,6 +123,10 @@ export const DeviceSchema = z.object({
   latencyMs: z.number().nullable(),
   isOnline: z.boolean(),
   securityFlags: z.array(SecurityFlagSchema),
+  // DNS intel (#1), CVE findings + riskScore (#2) and traffic (#3) are carried in
+  // `signals` (dnsProfile / cveFindings / riskScore / traffic) so they persist
+  // without an inventory/DB migration; high-severity CVEs also surface as
+  // securityFlags. See DnsProfileSchema / CveFindingSchema / TrafficSchema.
   label: z.string().nullable(),
   notes: z.string().nullable(),
   /** LuCI / router panel login saved per device (password never returned by API). */

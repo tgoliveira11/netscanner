@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { AppNav } from '../../components/AppNav';
 import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type AdminWirelessResponse, type ConfigFieldSchema } from '../../lib/api';
 
 function LogViewer({ lines }: { lines: AdminLogLine[] }) {
@@ -203,17 +204,17 @@ export default function AdminPage() {
   return (
     <main className="mx-auto w-full max-w-6xl space-y-6 p-4 md:p-6">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-edge pb-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-100">
-            Net<span className="text-accent">Scanner</span>{' '}
-            <span className="text-base font-normal text-muted">Admin</span>
-          </h1>
-          <p className="text-xs text-muted">Observability and runtime configuration (localhost only, no auth yet).</p>
+        <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
+          <div>
+            <h1 className="text-xl font-bold text-slate-100">
+              Net<span className="text-accent">Scanner</span>{' '}
+              <span className="text-base font-normal text-muted">Admin</span>
+            </h1>
+            <p className="text-xs text-muted">Observability and runtime configuration (localhost only, no auth yet).</p>
+          </div>
+          <AppNav />
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/" className="btn btn-ghost">
-            ← Dashboard
-          </Link>
           <button type="button" onClick={() => void refresh()} className="btn btn-ghost">
             Refresh
           </button>

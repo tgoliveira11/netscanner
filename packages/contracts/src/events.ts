@@ -14,7 +14,12 @@ export type DomainEvent =
   | { type: 'device.classified'; payload: { scanId: string; device: Device } }
   | { type: 'device.new'; payload: { scanId: string; device: Device } }
   | { type: 'device.changed'; payload: { scanId: string; device: Device; changes: string[] } }
-  | { type: 'device.offline'; payload: { deviceId: string } };
+  | { type: 'device.offline'; payload: { deviceId: string; device?: Device } }
+  | { type: 'device.online'; payload: { device: Device } }
+  | {
+      type: 'device.anomaly';
+      payload: { scanId: string; device: Device; code: string; severity: string; message: string };
+    };
 
 export type DomainEventType = DomainEvent['type'];
 
