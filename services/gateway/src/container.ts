@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OuiLookup, loadOuiTable } from '@netscanner/kernel';
-import { loadConfig, loadEnvFile, resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, type AppConfig } from '@netscanner/config';
+import { loadConfig, loadEnvFile, resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, mergeRouterScrapeTargets, type AppConfig } from '@netscanner/config';
 import { createLogger, type Logger } from '@netscanner/logger';
 import {
   NodeCommandRunner,
@@ -30,6 +30,8 @@ import {
   PassiveListeners,
   InMemoryPassiveSignalStore,
   HttpRouterScrapeAdapter,
+  DynamicRouterScrapeLeaseSource,
+  probeOpenWrtWireless,
   ProtocolProbe,
   MacDnsCacheProbe,
   MasscanProbe,
@@ -76,6 +78,7 @@ import { InProcessEventBus } from './infrastructure/event-bus.js';
 import { ScanSessionStore } from './application/scan-session.js';
 import { RunScanUseCase } from './application/run-scan.use-case.js';
 import { DeviceEnrichmentService } from './application/device-enrichment.service.js';
+import { BuildTopologyUseCase } from './application/build-topology.use-case.js';
 import { BackgroundWorker } from './application/background-worker.js';
 import { createRuntimeSettings, type RuntimeSettingsService } from './application/runtime-settings.service.js';
 import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
@@ -92,6 +95,8 @@ export interface Container {
   getDevice: GetDeviceUseCase;
   updateMeta: UpdateDeviceMetaUseCase;
   exportDevices: ExportDevicesUseCase;
+  buildTopology: BuildTopologyUseCase;
+  repo: IDeviceRepository;
   leaseSource?: IRouterLeaseSource;
   dhcpSource?: IDhcpFingerprintSource;
   dhcpStore?: IDhcpFingerprintStore;
@@ -325,21 +330,28 @@ export async function buildContainer(): Promise<Container> {
     );
     logger.info({ host: config.ROUTER_SNMP_HOST }, 'SNMP ARP lease source enabled');
   }
-  if (config.ROUTER_SCRAPE_URL && config.ROUTER_SCRAPE_KIND) {
-    leaseSources.push(
-      new HttpRouterScrapeAdapter(
-        {
-          baseUrl: config.ROUTER_SCRAPE_URL,
-          kind: config.ROUTER_SCRAPE_KIND,
-          username: config.ROUTER_SCRAPE_USER,
-          password: config.ROUTER_SCRAPE_PASSWORD,
-          insecureTls: true,
-        },
-        logger,
-      ),
-    );
-    logger.info({ url: config.ROUTER_SCRAPE_URL, kind: config.ROUTER_SCRAPE_KIND }, 'router HTTP scrape enabled');
-  }
+  leaseSources.push(
+    new DynamicRouterScrapeLeaseSource(async () => {
+      const creds = await repo.listRouterScrapeCredentials();
+      return mergeRouterScrapeTargets(
+        config,
+        creds.map((c) => ({
+          ip: c.ip,
+          deviceType: c.deviceType,
+          brand: c.brand,
+          routerScrapeUser: c.routerScrapeUser,
+          routerScrapePassword: c.routerScrapePassword,
+        })),
+      ).map((target) => ({
+        baseUrl: target.baseUrl,
+        kind: target.kind,
+        username: target.username,
+        password: target.password,
+        insecureTls: true,
+      }));
+    }, logger),
+  );
+  logger.info('router HTTP scrape enabled (env + per-device credentials)');
   if (config.FRITZBOX_URL) {
     leaseSources.push(
       new FritzBoxHttpAdapter(
@@ -451,6 +463,7 @@ export async function buildContainer(): Promise<Container> {
   const getDevice = new GetDeviceUseCase(repo);
   const updateMeta = new UpdateDeviceMetaUseCase(repo);
   const exportDevices = new ExportDevicesUseCase(repo);
+  const buildTopology = new BuildTopologyUseCase(repo, config, logger, connectionSource, listLocalInterfaces);
 
   const container: Container = {
     config,
@@ -463,6 +476,8 @@ export async function buildContainer(): Promise<Container> {
     getDevice,
     updateMeta,
     exportDevices,
+    buildTopology,
+    repo,
     leaseSource,
     dhcpSource,
     dhcpStore,

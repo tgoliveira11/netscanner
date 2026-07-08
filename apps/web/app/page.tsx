@@ -23,13 +23,9 @@ export default function DashboardPage() {
       <Header />
       <ScanControls />
       <StatsBar />
-      <div className="grid min-h-[480px] gap-4 xl:grid-cols-5">
-        <div className="xl:col-span-3">
-          <DeviceTable />
-        </div>
-        <div className="xl:col-span-2">
-          <TopologyView />
-        </div>
+      <DeviceTable />
+      <div className="min-h-[680px]">
+        <TopologyView />
       </div>
       <DeviceDrawer />
       <footer className="pt-2 text-center text-xs text-muted">

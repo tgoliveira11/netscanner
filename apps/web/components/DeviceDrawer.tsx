@@ -14,6 +14,11 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function isRouterPanel(device: { deviceType: string; services: { port: number }[] }): boolean {
+  if (['router', 'switch', 'access-point', 'firewall'].includes(device.deviceType)) return true;
+  return device.services.some((s) => s.port === 80 || s.port === 443);
+}
+
 /** Slide-over panel with the full per-device detail: attributes, ports, flags, notes. */
 export function DeviceDrawer() {
   const id = useStore((s) => s.selectedId);
@@ -22,18 +27,37 @@ export function DeviceDrawer() {
   const applyDevice = useStore((s) => s.applyDevice);
   const [label, setLabel] = useState('');
   const [notes, setNotes] = useState('');
+  const [routerUser, setRouterUser] = useState('');
+  const [routerPassword, setRouterPassword] = useState('');
 
   useEffect(() => {
     setLabel(device?.label ?? '');
     setNotes(device?.notes ?? '');
-  }, [device?.id, device?.label, device?.notes]);
+    setRouterUser(device?.routerScrapeUser ?? '');
+    setRouterPassword('');
+  }, [device?.id, device?.label, device?.notes, device?.routerScrapeUser, device?.routerScrapePasswordSet]);
 
   if (!id || !device) return null;
   const meta = deviceMeta(device.deviceType);
+  const showRouterAccess = isRouterPanel(device);
 
   const save = async () => {
-    const { device: updated } = await api.updateDevice(device.id, { label: label || null, notes: notes || null });
+    const body: {
+      label: string | null;
+      notes: string | null;
+      routerScrapeUser?: string | null;
+      routerScrapePassword?: string | null;
+    } = {
+      label: label || null,
+      notes: notes || null,
+    };
+    if (showRouterAccess) {
+      body.routerScrapeUser = routerUser.trim() || null;
+      if (routerPassword.trim()) body.routerScrapePassword = routerPassword;
+    }
+    const { device: updated } = await api.updateDevice(device.id, body);
     applyDevice(updated);
+    setRouterPassword('');
   };
 
   return (
@@ -139,6 +163,30 @@ export function DeviceDrawer() {
                 </div>
               ))}
             </div>
+          </section>
+        )}
+
+        {showRouterAccess && (
+          <section className="mt-5 space-y-2">
+            <h3 className="text-sm font-semibold text-slate-200">Router panel (LuCI scrape)</h3>
+            <p className="text-xs text-muted">
+              Credentials for this device only — used for DHCP leases and WiFi/SSID probe.
+            </p>
+            <input
+              value={routerUser}
+              onChange={(e) => setRouterUser(e.target.value)}
+              placeholder="Username (e.g. root)"
+              autoComplete="username"
+              className="w-full rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+            <input
+              type="password"
+              value={routerPassword}
+              onChange={(e) => setRouterPassword(e.target.value)}
+              placeholder={device.routerScrapePasswordSet ? '•••••••• (leave blank to keep)' : 'Password'}
+              autoComplete="current-password"
+              className="w-full rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
+            />
           </section>
         )}
 

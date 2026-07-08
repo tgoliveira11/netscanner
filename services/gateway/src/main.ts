@@ -13,9 +13,13 @@ async function main(): Promise<void> {
   await app.listen({ port: GATEWAY_PORT, host: GATEWAY_HOST });
 
   if (!container.capabilities.nmap) {
-    container.logger.warn(
-      'nmap not found — deep OS/service fingerprinting disabled. Install nmap for full detail.',
-    );
+    const reason =
+      container.capabilities.nmapOffReason === 'disabled-by-config'
+        ? 'DISABLE_NMAP=true in config — set to false in /admin or config.env'
+        : container.capabilities.nmapOffReason === 'not-in-path'
+          ? 'nmap binary not found in PATH — install nmap (e.g. brew install nmap)'
+          : 'nmap unavailable';
+    container.logger.warn({ reason, nmapOffReason: container.capabilities.nmapOffReason }, reason);
   }
   if (!container.capabilities.elevated) {
     container.logger.warn('not elevated — OS detection (nmap -O) unavailable. Run with sudo for it.');

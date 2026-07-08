@@ -13,6 +13,7 @@ import {
   type IDhcpFingerprintSource,
   type IDeviceFingerprintResolver,
   type IPassiveSignalStore,
+  resolvePfSenseTelemetry,
 } from '@netscanner/discovery';
 import { FingerprintHostUseCase, type IHostEnricher, type ScanDepth, type SnmpEnricher } from '@netscanner/scanner';
 import { ClassifyDeviceUseCase } from '@netscanner/classification';
@@ -71,6 +72,7 @@ export class RunScanUseCase {
     // provide hostname/VLAN for every device and let us surface hosts on other
     // subnets the local scan can't reach.
     const leases = await this.fetchLeases();
+    const pfSenseSignals = this.pfSenseSignalExtras();
     if (this.deps.connectionSource) {
       try {
         await this.deps.connectionSource.refresh();
@@ -158,6 +160,7 @@ export class RunScanUseCase {
         if (lease?.description) mergedSignals['routerDescription'] = lease.description;
         if (lease?.interface) mergedSignals['pfsenseInterface'] = lease.interface;
         if (lease?.description) mergedSignals['pfsenseDescription'] = lease.description;
+        Object.assign(mergedSignals, pfSenseSignals);
         mergedSignals = applyConnectionSignals(host.mac, mergedSignals, this.deps.connectionSource);
 
         const openPorts = new Set(fp.services.filter((s) => s.state === 'open').map((s) => s.port));
@@ -237,6 +240,7 @@ export class RunScanUseCase {
           pfsenseInterface: lease.interface,
           pfsenseDescription: lease.description,
           source: 'pfsense-lease',
+          ...pfSenseSignals,
         };
         const fb = await this.resolveFingerbank(lease.mac, lease.hostname, signals);
         if (fb) Object.assign(signals, fb);
@@ -431,6 +435,17 @@ export class RunScanUseCase {
       );
       return [];
     }
+  }
+
+  private pfSenseSignalExtras(): Record<string, unknown> {
+    const telemetry = resolvePfSenseTelemetry(this.deps.leaseSource);
+    if (!telemetry) return {};
+    const out: Record<string, unknown> = {};
+    if (telemetry.version) out.pfsenseVersion = telemetry.version;
+    if (telemetry.hostname) out.pfsenseHostname = telemetry.hostname;
+    if (telemetry.gateways.length) out.pfsenseGateways = telemetry.gateways;
+    if (telemetry.interfaces.length) out.pfsenseInterfaces = telemetry.interfaces;
+    return out;
   }
 
   private progress(scanId: string, patch: Parameters<ScanSessionStore['update']>[1]) {

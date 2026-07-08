@@ -1,4 +1,5 @@
 import { DeviceSchema, type Device, type OsGuess, type SecurityFlag, type ServiceInfo } from '@netscanner/contracts';
+import type { StoredDevice } from '../domain/device-public.js';
 
 /** Shape of a persisted row (matches the Prisma DeviceRecord model). */
 export interface DeviceRow {
@@ -16,6 +17,8 @@ export interface DeviceRow {
   isOnline: boolean;
   label: string | null;
   notes: string | null;
+  routerScrapeUser: string | null;
+  routerScrapePassword: string | null;
   osJson: string | null;
   servicesJson: string;
   securityFlagsJson: string;
@@ -26,6 +29,13 @@ export interface DeviceRow {
 
 /** Maps between the domain Device and the flat persistence row (SRP). */
 export const DeviceMapper = {
+  toStored(row: DeviceRow): StoredDevice {
+    return {
+      ...DeviceMapper.toDomain(row),
+      routerScrapePassword: row.routerScrapePassword,
+    };
+  },
+
   toDomain(row: DeviceRow): Device {
     return DeviceSchema.parse({
       id: row.id,
@@ -45,6 +55,8 @@ export const DeviceMapper = {
       securityFlags: JSON.parse(row.securityFlagsJson) as SecurityFlag[],
       label: row.label,
       notes: row.notes,
+      routerScrapeUser: row.routerScrapeUser,
+      routerScrapePasswordSet: Boolean(row.routerScrapePassword),
       firstSeen: row.firstSeen.toISOString(),
       lastSeen: row.lastSeen.toISOString(),
       signals: JSON.parse(row.signalsJson) as Record<string, unknown>,
@@ -67,6 +79,8 @@ export const DeviceMapper = {
       isOnline: device.isOnline,
       label: device.label,
       notes: device.notes,
+      routerScrapeUser: (device as StoredDevice).routerScrapeUser ?? null,
+      routerScrapePassword: (device as StoredDevice).routerScrapePassword ?? null,
       osJson: device.os ? JSON.stringify(device.os) : null,
       servicesJson: JSON.stringify(device.services),
       securityFlagsJson: JSON.stringify(device.securityFlags),

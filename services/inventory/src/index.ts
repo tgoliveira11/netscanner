@@ -10,3 +10,4 @@ export * from './domain/dhcp-fingerprint-store.js';
 export * from './infrastructure/in-memory-dhcp-fingerprint.store.js';
 export * from './infrastructure/prisma-dhcp-fingerprint.store.js';
 export * from './infrastructure/prisma-passive-signal.store.js';
+export * from './domain/device-public.js';

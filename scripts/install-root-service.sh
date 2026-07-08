@@ -46,6 +46,11 @@ command -v pnpm >/dev/null 2>&1 || { echo "pnpm fora do PATH do root. Rode:  sud
 
 NODE_BIN="$(dirname "$(command -v node)")"
 PNPM_BIN="$(dirname "$(command -v pnpm)")"
+# Homebrew nmap lives outside root's default PATH; include common macOS locations.
+BREW_BIN=""
+for d in /opt/homebrew/bin /usr/local/bin; do
+  [ -x "$d/nmap" ] && BREW_BIN="$d:$BREW_BIN"
+done
 echo "[root-svc] usuário: $REAL_USER | instalação: $NS | node: $NODE_BIN | pnpm: $PNPM_BIN"
 
 echo "[root-svc] removendo o LaunchAgent de usuário…"
@@ -63,7 +68,7 @@ AGENT_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
 RUNNER="$NS/agent-run-root.sh"
 cat > "$RUNNER" <<EOF
 #!/usr/bin/env bash
-export PATH="$NODE_BIN:$PNPM_BIN:\$PATH"
+export PATH="$BREW_BIN$NODE_BIN:$PNPM_BIN:\$PATH"
 export GATEWAY_PORT="$PORT"
 export GATEWAY_HOST="127.0.0.1"
 export DATABASE_URL="file:./netscanner.db"

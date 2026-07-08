@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify';
+import { mergeRouterScrapeTargets } from '@netscanner/config';
+import { probeOpenWrtWireless } from '@netscanner/discovery';
 import type { Container } from '../container.js';
 import { tailAgentLogFile } from '../infrastructure/log-ring-buffer.js';
 
@@ -72,6 +74,39 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
     configPath: c.runtimeSettings.configPath,
   }));
 
+  /** OpenWrt LuCI wireless/SSID probe for all configured ROUTER_SCRAPE targets. */
+  app.get('/api/admin/wireless', async () => {
+    const creds = await c.repo.listRouterScrapeCredentials();
+    const targets = mergeRouterScrapeTargets(
+      c.config,
+      creds.map((row) => ({
+        ip: row.ip,
+        deviceType: row.deviceType,
+        brand: row.brand,
+        routerScrapeUser: row.routerScrapeUser,
+        routerScrapePassword: row.routerScrapePassword,
+      })),
+    );
+    if (!targets.length) {
+      return { configured: false, routers: [] };
+    }
+    const routers = await probeOpenWrtWireless(
+      targets.map((t) => ({
+        baseUrl: t.baseUrl,
+        kind: t.kind,
+        username: t.username,
+        password: t.password,
+      })),
+      c.logger,
+    );
+    return {
+      configured: true,
+      count: routers.length,
+      transmitting: routers.filter((r) => r.ok && r.ssids.some((s) => s.up && s.ssid)).length,
+      routers,
+    };
+  });
+
   app.patch('/api/admin/config', async (request, reply) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
     try {
@@ -93,7 +128,7 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
   /** Same as POST /api/agent/restart but without Bearer token (admin UI is localhost-only). */
   app.post('/api/admin/restart', async (_request, reply) => {
     c.logger.info('agent restart requested via admin');
-    void reply.send({ ok: true, restarting: true });
-    setImmediate(() => process.exit(0));
+    await reply.send({ ok: true, restarting: true });
+    setTimeout(() => process.exit(0), 500);
   });
 }

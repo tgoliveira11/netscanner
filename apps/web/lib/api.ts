@@ -3,59 +3,104 @@ import type {
   HealthResponse,
   ScanSession,
   ScanType,
+  TopologyResponse,
   UpdateDeviceRequest,
 } from '@netscanner/contracts';
 
-/** Thin typed REST client. Requests go through Next's /api rewrite to the gateway. */
+/** Agent API base — same-origin on :4000 bundle; :4000 when Next dev runs on :3000. */
+export function apiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '');
+  if (typeof window === 'undefined') return 'http://127.0.0.1:4000';
+  if (window.location.port === '3000') {
+    return `${window.location.protocol}//${window.location.hostname}:4000`;
+  }
+  return window.location.origin;
+}
+
+function apiUrl(path: string): string {
+  return `${apiBase()}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json() as Promise<T>;
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(apiUrl(path), init);
+}
+
+/** Restart agent; POST only acknowledges shutdown — always poll until /api/health responds. */
+async function agentRestart(): Promise<{ ok: boolean; restarting: boolean }> {
+  try {
+    await apiFetch('/api/admin/restart', { method: 'POST' });
+  } catch {
+    /* server closes the socket during exit */
+  }
+
+  await sleep(500);
+  for (let i = 0; i < 45; i++) {
+    await sleep(1000);
+    try {
+      const res = await apiFetch('/api/health', { cache: 'no-store' });
+      if (res.ok) return { ok: true, restarting: true };
+    } catch {
+      /* agent still starting */
+    }
+  }
+  throw new Error('Agent não respondeu após o restart (aguardou 45s). Use: sudo netscanner-ctl restart');
+}
+
 export const api = {
-  health: () => fetch('/api/health').then((r) => json<HealthResponse>(r)),
+  health: () => apiFetch('/api/health').then((r) => json<HealthResponse>(r)),
 
   interfaces: () =>
-    fetch('/api/network/interfaces').then((r) =>
+    apiFetch('/api/network/interfaces').then((r) =>
       json<{ interfaces: { name: string; cidr: string }[]; primaryCidr: string | null }>(r),
     ),
 
-  listDevices: () => fetch('/api/devices').then((r) => json<{ devices: Device[]; total: number }>(r)),
+  listDevices: () => apiFetch('/api/devices').then((r) => json<{ devices: Device[]; total: number }>(r)),
 
-  latestScan: () => fetch('/api/scans').then((r) => json<{ scan: ScanSession | null }>(r)),
+  topology: () => apiFetch('/api/topology').then((r) => json<TopologyResponse>(r)),
+
+  latestScan: () => apiFetch('/api/scans').then((r) => json<{ scan: ScanSession | null }>(r)),
 
   startScan: (body: { cidr?: string; scanType: ScanType }) =>
-    fetch('/api/scans', {
+    apiFetch('/api/scans', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ scan: ScanSession }>(r)),
 
   updateDevice: (id: string, body: UpdateDeviceRequest) =>
-    fetch(`/api/devices/${id}`, {
+    apiFetch(`/api/devices/${id}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ device: Device }>(r)),
 
-  exportUrl: (format: 'json' | 'csv') => `/api/export?format=${format}`,
+  exportUrl: (format: 'json' | 'csv') => apiUrl(`/api/export?format=${format}`),
 
-  adminObservability: () => fetch('/api/admin/observability').then((r) => json<AdminObservability>(r)),
+  adminObservability: () => apiFetch('/api/admin/observability').then((r) => json<AdminObservability>(r)),
 
-  adminLogs: (tail = 200) =>
-    fetch(`/api/admin/logs?tail=${tail}`).then((r) => json<AdminLogsResponse>(r)),
+  adminLogs: (tail = 200) => apiFetch(`/api/admin/logs?tail=${tail}`).then((r) => json<AdminLogsResponse>(r)),
 
-  adminConfig: () => fetch('/api/admin/config').then((r) => json<AdminConfigResponse>(r)),
+  adminConfig: () => apiFetch('/api/admin/config').then((r) => json<AdminConfigResponse>(r)),
+
+  adminWireless: () => apiFetch('/api/admin/wireless').then((r) => json<AdminWirelessResponse>(r)),
 
   adminUpdateConfig: (body: Record<string, unknown>) =>
-    fetch('/api/admin/config', {
+    apiFetch('/api/admin/config', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<AdminConfigPatchResponse>(r)),
 
-  agentRestart: () =>
-    fetch('/api/admin/restart', { method: 'POST' }).then((r) => json<{ ok: boolean; restarting: boolean }>(r)),
+  agentRestart,
 };
 
 export interface ConfigFieldSchema {
@@ -74,7 +119,7 @@ export interface AdminObservability {
   nodeVersion: string;
   cwd: string;
   configPath: string;
-  capabilities: { nmap: boolean; elevated: boolean };
+  capabilities: { nmap: boolean; elevated: boolean; nmapOffReason?: 'disabled-by-config' | 'not-in-path' };
   background: Record<string, unknown>;
   inventory: { deviceCount: number };
   scans: { latest: unknown; active: unknown };
@@ -108,4 +153,31 @@ export interface AdminConfigPatchResponse {
   values: Record<string, string | number | boolean | null>;
   restartRequired: boolean;
   applied: string[];
+}
+
+export interface AdminWirelessSsid {
+  device: string;
+  ifname: string;
+  ssid: string;
+  up: boolean;
+  mode?: string;
+  channel?: number | string;
+  disabled?: boolean;
+}
+
+export interface AdminWirelessRouter {
+  url: string;
+  host: string;
+  ok: boolean;
+  error?: string;
+  wifiCapable: boolean;
+  radioCount: number;
+  ssids: AdminWirelessSsid[];
+}
+
+export interface AdminWirelessResponse {
+  configured: boolean;
+  count?: number;
+  transmitting?: number;
+  routers: AdminWirelessRouter[];
 }
