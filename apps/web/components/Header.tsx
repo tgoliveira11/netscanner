@@ -3,6 +3,7 @@
 import { api } from '../lib/api';
 import { useStore } from '../lib/store';
 import { AlertsBell } from './AlertsBell';
+import { AppNav } from './AppNav';
 
 /** Top bar: brand, live status, alerts, export, admin link. */
 export function Header() {
@@ -11,11 +12,14 @@ export function Header() {
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-edge pb-4">
-      <div>
-        <h1 className="text-xl font-bold text-slate-100">
-          Net<span className="text-accent">Scanner</span>
-        </h1>
-        <p className="text-xs text-muted">Discover & classify every device on your network — scan only networks you own.</p>
+      <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
+        <div>
+          <h1 className="text-xl font-bold text-slate-100">
+            Net<span className="text-accent">Scanner</span>
+          </h1>
+          <p className="text-xs text-muted">Discover & classify every device on your network — scan only networks you own.</p>
+        </div>
+        <AppNav />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className={`badge ${connected ? 'bg-good/15 text-good' : 'bg-bad/15 text-bad'}`}>
@@ -39,9 +43,6 @@ export function Header() {
           {caps?.elevated ? 'elevated' : 'unprivileged'}
         </span>
         <AlertsBell />
-        <a href="/admin/" className="btn btn-ghost">
-          Admin
-        </a>
         <a href={api.exportUrl('json')} className="btn btn-ghost">
           Export JSON
         </a>

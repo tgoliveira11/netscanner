@@ -1,7 +1,18 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { useStore } from '../lib/store';
+import { useStore, type AlertItem } from '../lib/store';
+
+function alertBadgeClass(kind: AlertItem['kind']): string {
+  switch (kind) {
+    case 'new':
+      return 'bg-good/15 text-good';
+    case 'security':
+      return 'bg-bad/15 text-bad';
+    default:
+      return 'bg-warn/15 text-warn';
+  }
+}
 
 /** Compact alerts dropdown for the header (keeps main grid full-width). */
 export function AlertsBell() {
@@ -54,9 +65,7 @@ export function AlertsBell() {
                 }}
                 className="block w-full rounded-lg border border-edge bg-panelup px-3 py-2 text-left text-xs hover:border-accent"
               >
-                <span
-                  className={`badge mr-2 ${a.kind === 'new' ? 'bg-good/15 text-good' : 'bg-warn/15 text-warn'}`}
-                >
+                <span className={`badge mr-2 ${alertBadgeClass(a.kind)}`}>
                   {a.kind}
                 </span>
                 <span className="text-slate-200">{a.message}</span>

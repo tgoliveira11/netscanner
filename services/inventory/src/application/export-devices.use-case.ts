@@ -1,5 +1,6 @@
 import type { Device } from '@netscanner/contracts';
 import type { IDeviceRepository } from '../domain/device-repository.js';
+import { collapseInfrastructureAliases } from '../domain/infrastructure-aliases.js';
 
 export type ExportFormat = 'json' | 'csv';
 
@@ -50,8 +51,13 @@ function csvEscape(value: unknown): string {
 export class ExportDevicesUseCase {
   constructor(private readonly repo: IDeviceRepository) {}
 
-  async execute(format: ExportFormat): Promise<{ body: string; contentType: string; filename: string }> {
-    const devices = await this.repo.list();
+  async execute(
+    format: ExportFormat,
+    options?: { preferredInfrastructureIp?: string | null },
+  ): Promise<{ body: string; contentType: string; filename: string }> {
+    const devices = collapseInfrastructureAliases(await this.repo.list(), {
+      preferredIp: options?.preferredInfrastructureIp,
+    });
     if (format === 'json') {
       return {
         body: JSON.stringify(devices, null, 2),

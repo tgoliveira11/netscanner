@@ -1,4 +1,6 @@
 import { connect as tlsConnect } from 'node:tls';
+import { connect as tcpConnect } from 'node:net';
+import { createHash } from 'node:crypto';
 import type { ServiceInfo } from '@netscanner/contracts';
 import type { HostEnrichment, IHostEnricher } from '../domain/host-enricher.js';
 
@@ -46,6 +48,14 @@ export class NetworkEnricher implements IHostEnricher {
     const tlsPort = [...openPorts].find((p) => TLS_PORTS.has(p));
     if (tlsPort) {
       jobs.push(this.fetchTlsSubject(ip, tlsPort, out));
+    }
+
+    if (openPorts.has(22)) {
+      jobs.push(this.fetchSshBanner(ip, out));
+    }
+
+    if (webPort) {
+      jobs.push(this.fetchFaviconHash(ip, webPort, out));
     }
 
     await Promise.allSettled(jobs);
@@ -116,6 +126,54 @@ export class NetworkEnricher implements IHostEnricher {
       socket.on('timeout', finish);
       socket.on('error', finish);
     });
+  }
+
+  private fetchSshBanner(ip: string, out: HostEnrichment): Promise<void> {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        socket.destroy();
+        resolve();
+      };
+      const socket = tcpConnect({ host: ip, port: 22, timeout: this.timeoutMs });
+      let buf = '';
+      socket.on('data', (chunk) => {
+        buf += chunk.toString('utf8', 0, 512);
+        const line = buf.split('\n')[0]?.trim();
+        if (line) {
+          out.signals['sshBanner'] = line;
+          finish();
+        }
+      });
+      socket.on('timeout', finish);
+      socket.on('error', finish);
+      setTimeout(finish, this.timeoutMs + 100);
+    });
+  }
+
+  private async fetchFaviconHash(ip: string, port: number, out: HostEnrichment): Promise<void> {
+    const scheme = TLS_PORTS.has(port) ? 'https' : 'http';
+    for (const path of ['/favicon.ico', '/favicon.png']) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        const res = await fetch(`${scheme}://${ip}:${port}${path}`, {
+          signal: controller.signal,
+          redirect: 'follow',
+        }).finally(() => clearTimeout(timer));
+        if (!res.ok) continue;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 8) continue;
+        const hash = createHash('sha256').update(buf).digest('hex').slice(0, 16);
+        out.signals['faviconHash'] = hash;
+        out.signals['faviconUrl'] = path;
+        return;
+      } catch {
+        /* try next path */
+      }
+    }
   }
 
   private async httpResponse(

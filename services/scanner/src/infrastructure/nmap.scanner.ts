@@ -28,9 +28,12 @@ export class NmapScanner implements IDeepScanner {
 
   private buildArgs(target: ScanTarget): string[] {
     const args = ['-oX', '-', '-Pn', '-sV'];
+    if (this.options.elevated) args.push('-sS');
     if (target.depth === 'quick') args.push('-F');
-    else if (target.depth === 'deep') args.push('-p-');
-    else args.push('--top-ports', '1000');
+    else if (target.depth === 'deep') {
+      args.push('-p-');
+      if (this.options.elevated) args.push('-sU', '--top-ports', '100');
+    } else args.push('--top-ports', '1000');
     if (target.osDetection && this.options.elevated) args.push('-O', '--osscan-guess');
     if (target.depth !== 'quick') {
       const scripts = [

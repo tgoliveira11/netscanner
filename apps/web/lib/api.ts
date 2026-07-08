@@ -69,7 +69,19 @@ export const api = {
 
   listDevices: () => apiFetch('/api/devices').then((r) => json<{ devices: Device[]; total: number }>(r)),
 
-  topology: () => apiFetch('/api/topology').then((r) => json<TopologyResponse>(r)),
+  topology: (opts?: { since?: string }) => {
+    const qs = opts?.since ? `?since=${encodeURIComponent(opts.since)}` : '';
+    return apiFetch(`/api/topology${qs}`).then((r) => json<TopologyResponse>(r));
+  },
+
+  relations: () =>
+    apiFetch('/api/relations').then((r) =>
+      json<{
+        edges: { from: string; to: string; kind: string; label: string; bytes?: number }[];
+        externalContacts: { deviceId: string; domain: string; vendor?: string }[];
+        dnsLog: { at: string; deviceId: string; deviceLabel: string; message: string }[];
+      }>(r),
+    ),
 
   latestScan: () => apiFetch('/api/scans').then((r) => json<{ scan: ScanSession | null }>(r)),
 

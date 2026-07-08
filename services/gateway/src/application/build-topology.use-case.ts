@@ -10,6 +10,7 @@ import type {
   TopologyVlan,
 } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
+import { createHash } from 'node:crypto';
 import {
   isLocalScannerDevice,
   normalizeMac,
@@ -20,16 +21,35 @@ import {
 import type { RouterScrapeTarget } from '@netscanner/config';
 import type { LocalInterface } from '@netscanner/os-abstraction';
 import type { IDeviceRepository } from '@netscanner/inventory';
+import { collapseInfrastructureAliases, isPfSenseSelfNic } from '@netscanner/inventory';
+
+export { isPfSenseSelfNic } from '@netscanner/inventory';
+
+/** Stable fingerprint for topology structure (ignores device online/presence). */
+export function topologyRevision(
+  body: Pick<TopologyResponse, 'gatewayId' | 'edges' | 'nodes' | 'vlans' | 'ssids'>,
+): string {
+  const fp = JSON.stringify({
+    gatewayId: body.gatewayId,
+    edges: body.edges
+      .map((e) => `${e.from}|${e.to}|${e.kind}|${e.vlan ?? ''}|${e.ssid ?? ''}`)
+      .sort(),
+    nodes: body.nodes.map((n) => `${n.id}|${n.role}|${n.tier}`).sort(),
+    vlans: body.vlans.map((v) => `${v.id}|${v.label}`).sort(),
+    ssids: body.ssids.map((s) => `${s.routerId}|${s.ssid}|${s.up}|${s.clientCount}`).sort(),
+  });
+  return createHash('sha256').update(fp).digest('hex').slice(0, 16);
+}
+
+function finalizeTopology(
+  body: Pick<TopologyResponse, 'gatewayId' | 'edges' | 'nodes' | 'vlans' | 'ssids'>,
+): TopologyResponse {
+  return { ...body, revision: topologyRevision(body) };
+}
 
 const CORE_VLAN_ORDER = ['VLAN40', 'VLAN10', 'VLAN30', 'VLAN20'] as const;
 const MAC_SHARING_PREFIX = '192.168.64.';
-
-interface PfSenseIfaceSignal {
-  name?: string | null;
-  descr?: string | null;
-  ipaddr?: string | null;
-  mac?: string | null;
-}
+const WIRELESS_PROBE_TTL_MS = 5 * 60_000;
 
 interface PfSenseGatewaySignal {
   name?: string | null;
@@ -52,6 +72,12 @@ interface PfSenseGatewaySignal {
  * VPN overlays stay out of the main tree. pfSense self-NICs are never leaf clients.
  */
 export class BuildTopologyUseCase {
+  private wirelessCache: {
+    at: number;
+    data: Awaited<ReturnType<typeof probeOpenWrtWireless>>;
+  } | null = null;
+  private cached: TopologyResponse | null = null;
+
   constructor(
     private readonly repo: IDeviceRepository,
     private readonly config: AppConfig,
@@ -60,7 +86,19 @@ export class BuildTopologyUseCase {
     private readonly listLocalInterfaces: () => LocalInterface[] = () => [],
   ) {}
 
-  async execute(): Promise<TopologyResponse> {
+  async execute(options?: { since?: string }): Promise<TopologyResponse> {
+    if (options?.since && this.cached?.revision === options.since) {
+      return {
+        revision: options.since,
+        unchanged: true,
+        gatewayId: this.cached.gatewayId,
+        edges: [],
+        ssids: [],
+        vlans: [],
+        nodes: [],
+      };
+    }
+
     if (this.connectionSource) {
       try {
         await this.connectionSource.refresh();
@@ -72,7 +110,11 @@ export class BuildTopologyUseCase {
       }
     }
 
-    const devices = await this.repo.list();
+    const raw = await this.repo.list();
+    const preferredIp =
+      hostFromUrl(this.config.PFSENSE_URL ?? '') || this.config.ROUTER_SNMP_HOST || null;
+    // Match /api/devices list — collapsed IDs so the UI store can resolve gateway + nodes.
+    const devices = collapseInfrastructureAliases(raw, { preferredIp });
     const localIfaces = this.listLocalInterfaces();
     const scrapeTargets = await this.resolveScrapeTargets();
     const managedRouterIps = new Set(
@@ -83,15 +125,7 @@ export class BuildTopologyUseCase {
 
     const wireless =
       scrapeTargets.length > 0
-        ? await probeOpenWrtWireless(
-            scrapeTargets.map((t) => ({
-              baseUrl: t.baseUrl,
-              kind: t.kind,
-              username: t.username,
-              password: t.password,
-            })),
-            this.logger,
-          )
+        ? await this.loadWireless(scrapeTargets)
         : [];
 
     const gateway = pickGateway(devices, localIfaces, this.config);
@@ -106,7 +140,15 @@ export class BuildTopologyUseCase {
     const placed = new Set<string>();
 
     if (!gateway) {
-      return { gatewayId: null, edges: [], ssids: [], vlans: [], nodes: [] };
+      const empty = finalizeTopology({
+        gatewayId: null,
+        edges: [],
+        ssids: [],
+        vlans: [],
+        nodes: [],
+      });
+      this.cached = empty;
+      return empty;
     }
 
     const wanModems = pickWanModems(devices, gateway);
@@ -268,13 +310,15 @@ export class BuildTopologyUseCase {
 
     const ssids = collectSsids(wireless, wifiAps);
 
-    return {
+    const result = finalizeTopology({
       gatewayId: gateway.id,
       edges,
       ssids,
       vlans: collectVlans(edges),
       nodes,
-    };
+    });
+    this.cached = result;
+    return result;
   }
 
   private async resolveScrapeTargets(): Promise<RouterScrapeTarget[]> {
@@ -290,9 +334,64 @@ export class BuildTopologyUseCase {
       })),
     );
   }
+
+  /** Reuse recent wireless probe so topology does not flash empty between API calls. */
+  private async loadWireless(
+    scrapeTargets: RouterScrapeTarget[],
+  ): Promise<Awaited<ReturnType<typeof probeOpenWrtWireless>>> {
+    const now = Date.now();
+    if (this.wirelessCache && now - this.wirelessCache.at < WIRELESS_PROBE_TTL_MS) {
+      return this.wirelessCache.data;
+    }
+    const data = await probeOpenWrtWireless(
+      scrapeTargets.map((t) => ({
+        baseUrl: t.baseUrl,
+        kind: t.kind,
+        username: t.username,
+        password: t.password,
+      })),
+      this.logger,
+    );
+    if (data.some((row) => row.ok)) {
+      this.wirelessCache = { at: now, data };
+    } else if (this.wirelessCache) {
+      return this.wirelessCache.data;
+    }
+    return data;
+  }
 }
 
 /** Prefer configured SNMP/pfSense host, then pfSense-branded routers, then any .1 that isn't WAN/side. */
+function findRouterByIpOrInfrastructure(routers: Device[], ip: string): Device | null {
+  if (!ip) return null;
+  const direct = routers.find((d) => d.ip === ip);
+  if (direct) return direct;
+  return (
+    routers.find((d) => {
+      const ips = d.signals?.infrastructureIps;
+      return Array.isArray(ips) && ips.includes(ip);
+    }) ?? null
+  );
+}
+
+/** Collapsed multi-NIC pfSense / firewall — authoritative LAN root for topology. */
+function pickMultiHomedGateway(routers: Device[]): Device | null {
+  const multi = routers.filter((d) => {
+    const ips = d.signals?.infrastructureIps;
+    return Array.isArray(ips) && ips.length > 1;
+  });
+  if (multi.length === 0) return null;
+  return (
+    multi.find((d) => d.deviceType === 'firewall') ??
+    [...multi].sort((a, b) => {
+      const al = (a.signals?.infrastructureIps as string[]).length;
+      const bl = (b.signals?.infrastructureIps as string[]).length;
+      return bl - al;
+    })[0] ??
+    null
+  );
+}
+
 export function pickGateway(
   devices: Device[],
   localIfaces: LocalInterface[],
@@ -307,12 +406,12 @@ export function pickGateway(
   );
   if (routers.length === 0) return null;
 
-  const byIp = (ip: string) => (ip ? routers.find((d) => d.ip === ip) ?? null : null);
   const pfsenseHost = hostFromUrl(config.PFSENSE_URL ?? '');
 
   return (
-    byIp(config.ROUTER_SNMP_HOST ?? '') ??
-    byIp(pfsenseHost) ??
+    findRouterByIpOrInfrastructure(routers, config.ROUTER_SNMP_HOST ?? '') ??
+    findRouterByIpOrInfrastructure(routers, pfsenseHost) ??
+    pickMultiHomedGateway(routers) ??
     routers.find((d) => {
       const iface = String(d.signals?.pfsenseHostname ?? '');
       return iface.toLowerCase() === 'pfsense' || d.brand?.toLowerCase().includes('pfsense');
@@ -540,22 +639,6 @@ export function isWanOrUnusedSegment(vlanId: string): boolean {
   if (id === 'LAN') return true; // no-carrier legacy segment
   if (id === 'TRUNK') return true;
   return false;
-}
-
-export function isPfSenseSelfNic(device: Device): boolean {
-  const ifaces = asRows<PfSenseIfaceSignal>(device.signals?.pfsenseInterfaces);
-  if (ifaces.length === 0) return false;
-  const mac = normalizeMac(device.mac);
-  for (const iface of ifaces) {
-    if (iface.ipaddr && iface.ipaddr === device.ip) return true;
-    if (mac && isPhysMac(iface.mac) && normalizeMac(iface.mac) === mac) return true;
-  }
-  return false;
-}
-
-function isPhysMac(mac: string | null | undefined): boolean {
-  const n = normalizeMac(mac);
-  return Boolean(n && /^[0-9a-f]{12}$/.test(n));
 }
 
 function isWanLikeName(name: string | null | undefined, descr?: string | null): boolean {

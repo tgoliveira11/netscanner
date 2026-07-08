@@ -68,6 +68,22 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
     }
     return changed;
   }
+
+  async updatePresence(
+    id: string,
+    patch: { isOnline: boolean; latencyMs?: number | null },
+  ): Promise<Device | null> {
+    const stored = this.devices.get(id);
+    if (!stored) return null;
+    const next: StoredDevice = {
+      ...stored,
+      isOnline: patch.isOnline,
+      latencyMs: patch.latencyMs === undefined ? stored.latencyMs : patch.latencyMs,
+      lastSeen: patch.isOnline ? new Date().toISOString() : stored.lastSeen,
+    };
+    this.devices.set(id, next);
+    return stripStored(next);
+  }
 }
 
 function stripStored(device: StoredDevice): Device {

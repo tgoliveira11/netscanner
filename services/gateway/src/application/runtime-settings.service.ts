@@ -46,6 +46,7 @@ export function createRuntimeSettings(c: Container, configPath: string): Runtime
         if (key && c.fingerbank) c.fingerbank.setApiKey(key);
       }
       c.backgroundWorker.reconfigure();
+      c.presenceMonitor.reconfigure();
 
       return { restartRequired, applied };
     },

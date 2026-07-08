@@ -100,4 +100,23 @@ export class PrismaDeviceRepository implements IDeviceRepository {
     }
     return stale.map((s) => s.id);
   }
+
+  async updatePresence(
+    id: string,
+    patch: { isOnline: boolean; latencyMs?: number | null },
+  ): Promise<Device | null> {
+    try {
+      const row = await this.prisma.deviceRecord.update({
+        where: { id },
+        data: {
+          isOnline: patch.isOnline,
+          ...(patch.latencyMs !== undefined ? { latencyMs: patch.latencyMs } : {}),
+          ...(patch.isOnline ? { lastSeen: new Date() } : {}),
+        },
+      });
+      return DeviceMapper.toDomain(row as DeviceRow);
+    } catch {
+      return null;
+    }
+  }
 }
