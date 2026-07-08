@@ -13,6 +13,10 @@ export interface DhcpFingerprint {
  * Port for a source of DHCP fingerprints keyed by MAC (DIP). Implemented by a
  * passive on-LAN sniffer; the resolver (Fingerbank) consumes these to name the
  * exact device model/OS version.
+ *
+ * Local sniff only sees VLANs present on this host's L2 interfaces. Cross-VLAN
+ * capture (e.g. guest behind an OpenWrt DSA switch) requires a remote tcpdump
+ * on the switch/gateway bridge.
  */
 export interface IDhcpFingerprintSource {
   start(): Promise<void>;
@@ -22,8 +26,8 @@ export interface IDhcpFingerprintSource {
   list(): DhcpFingerprint[];
   size(): number;
   isListening(): boolean;
-  /** Active capture backend, when listening. */
-  mode(): 'udp' | 'tcpdump' | null;
+  /** Active capture backend(s), when listening (e.g. udp, tcpdump, remote-tcpdump, composite). */
+  mode(): string | null;
   /** Fired when a new or updated fingerprint is captured (sync; keep handler fast). */
   onCaptured(handler: (fp: DhcpFingerprint) => void): () => void;
 }

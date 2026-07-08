@@ -65,12 +65,29 @@ export class RunScanUseCase {
   constructor(private readonly deps: RunScanDeps) {}
 
   async execute(scanId: string, cidr: Cidr, scanType: ScanType): Promise<void> {
-    const { sessions, events, logger } = this.deps;
-    const gatewayIp = this.inferGateway(cidr);
+    return this.executeMany(scanId, [cidr], scanType);
+  }
 
-    // Pull authoritative DHCP leases from the router (pfSense) up front. These
-    // provide hostname/VLAN for every device and let us surface hosts on other
-    // subnets the local scan can't reach.
+  /**
+   * Full scan across one or more CIDRs in a single session.
+   * Offline marking runs once at the end so earlier subnets are not wiped.
+   */
+  async executeMany(scanId: string, cidrs: Cidr[], scanType: ScanType): Promise<void> {
+    const { sessions, events, logger } = this.deps;
+    if (!cidrs.length) {
+      this.progress(scanId, {
+        status: 'failed',
+        error: 'No CIDRs to scan',
+        finishedAt: new Date().toISOString(),
+      });
+      events.emit({ type: 'scan.failed', payload: { scanId, error: 'No CIDRs to scan' } });
+      return;
+    }
+
+    const cidrLabel = cidrs.map((c) => c.toString()).join(',');
+    sessions.update(scanId, { cidr: cidrLabel });
+    const gatewayIp = this.inferGateway(cidrs[0]!);
+
     const leases = await this.fetchLeases();
     const pfSenseSignals = this.pfSenseSignalExtras();
     if (this.deps.connectionSource) {
@@ -100,139 +117,144 @@ export class RunScanUseCase {
       this.progress(scanId, { status: 'discovering' });
       events.emit({ type: 'scan.started', payload: sessions.get(scanId)! });
 
-      const discoveredIps = new Set<string>();
-      const hosts = await this.deps.discover.execute({
-        cidr,
-        concurrency: this.deps.config.SCAN_CONCURRENCY,
-        timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
-        onHost: (host) => {
-          discoveredIps.add(host.ip);
-          const s = this.progress(scanId, { hostsDiscovered: discoveredIps.size });
-          events.emit({ type: 'host.discovered', payload: { scanId, host } });
-          if (s) events.emit({ type: 'scan.progress', payload: s });
-        },
-      });
-
-      const s = this.progress(scanId, {
-        status: 'fingerprinting',
-        hostsTotal: hosts.length,
-        hostsDiscovered: hosts.length,
-      });
-      if (s) events.emit({ type: 'scan.progress', payload: s });
-
-      const ptrMap = await batchReverseDns(
-        hosts.map((h) => h.ip),
-        this.deps.config.SCAN_CONCURRENCY,
-      );
-
       const seenIds: string[] = [];
-      await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
-        const depth = await this.resolveDepth(host.ip, host.mac, scanType);
-        const fp = await this.deps.fingerprint.execute({
-          ip: host.ip,
-          depth,
-          // When running elevated, attempt OS detection on every non-quick scan
-          // (not just deep) so the OS column populates without extra steps.
-          osDetection: depth !== 'quick' && this.deps.elevated,
-          timeoutMs: depth === 'deep' ? 60000 : depth === 'standard' ? 30000 : 15000,
-        });
+      let hostsTotal = 0;
+      let hostsDiscovered = 0;
 
-        // Application-layer enrichment: UPnP description, HTTP Server/title, TLS
-        // cert subject — often an exact vendor/model even behind a randomized MAC.
-        const enrichment = await this.deps.enricher.enrich(host.ip, fp.services, host.signals);
-        const lease = leaseFor(host.ip, host.mac);
-        const dhcp = host.mac ? this.deps.dhcpSource?.get(host.mac) : undefined;
-        let mergedSignals: Record<string, unknown> = { ...host.signals, ...enrichment.signals };
-        if (fp.signals) mergedSignals = { ...mergedSignals, ...fp.signals };
-        if (this.deps.passiveStore) {
-          const fromPassive = mergePassiveSignals(
-            this.deps.passiveStore.get(host.ip),
-            host.mac ? this.deps.passiveStore.getByMac(host.mac) : {},
-          );
-          mergedSignals = { ...fromPassive, ...mergedSignals };
-        }
-        if (dhcp) {
-          mergedSignals['dhcpFingerprint'] = dhcp.fingerprint;
-          mergedSignals['dhcpVendorClass'] = dhcp.vendorClass;
-          mergedSignals['dhcpHostname'] = dhcp.hostname;
-        }
-        if (lease?.interface) mergedSignals['routerInterface'] = lease.interface;
-        if (lease?.description) mergedSignals['routerDescription'] = lease.description;
-        if (lease?.interface) mergedSignals['pfsenseInterface'] = lease.interface;
-        if (lease?.description) mergedSignals['pfsenseDescription'] = lease.description;
-        Object.assign(mergedSignals, pfSenseSignals);
-        mergedSignals = applyConnectionSignals(host.mac, mergedSignals, this.deps.connectionSource);
-
-        const openPorts = new Set(fp.services.filter((s) => s.state === 'open').map((s) => s.port));
-        if (this.deps.snmp && (openPorts.has(161) || host.ip === gatewayIp)) {
-          const snmp = await this.deps.snmp.query(host.ip);
-          if (snmp) Object.assign(mergedSignals, this.deps.snmp.signalsFrom(snmp));
-        }
-
-        const hostname =
-          lease?.hostname ??
-          dhcp?.hostname ??
-          strSignal(mergedSignals, 'resolverCacheName') ??
-          strSignal(mergedSignals, 'netbiosName') ??
-          strSignal(mergedSignals, 'llmnrName') ??
-          strSignal(mergedSignals, 'lldpSystemName') ??
-          host.hostname ??
-          fp.hostname ??
-          enrichment.hostname ??
-          ptrMap.get(host.ip) ??
-          (await reverseDns(host.ip));
-
-        const fb = await this.resolveFingerbank(host.mac, hostname, mergedSignals);
-        if (fb) Object.assign(mergedSignals, fb);
-
-        const classification = this.deps.classify.execute({
-          ip: host.ip,
-          mac: host.mac,
-          hostname,
-          os: fp.os,
-          services: fp.services,
-          vendorFromScan: fp.vendorFromScan ?? enrichment.vendor ?? null,
-          gatewayIp,
-          signals: mergedSignals,
-        });
-
-        const snapshot: DeviceSnapshot = {
-          ip: host.ip,
-          mac: host.mac,
-          vendor: classification.vendor,
-          brand: classification.brand,
-          model: classification.model,
-          hostname,
-          deviceType: classification.deviceType as DeviceSnapshot['deviceType'],
-          confidence: classification.confidence,
-          os: classification.os,
-          connectionType: classification.connectionType,
-          services: fp.services,
-          latencyMs: host.latencyMs,
-          securityFlags: classification.securityFlags,
-          signals: {
-            ...mergedSignals,
-            connectionBasis: classification.connectionBasis,
-            classification: classification.reasons,
+      for (const cidr of cidrs) {
+        const subnetGateway = this.inferGateway(cidr) ?? gatewayIp;
+        const discoveredIps = new Set<string>();
+        const hosts = await this.deps.discover.execute({
+          cidr,
+          concurrency: this.deps.config.SCAN_CONCURRENCY,
+          timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
+          onHost: (host) => {
+            discoveredIps.add(host.ip);
+            const s = this.progress(scanId, {
+              hostsDiscovered: hostsDiscovered + discoveredIps.size,
+            });
+            events.emit({ type: 'host.discovered', payload: { scanId, host } });
+            if (s) events.emit({ type: 'scan.progress', payload: s });
           },
-        };
-
-        const { device, isNew, changes } = await this.deps.upsert.execute(snapshot);
-        seenIds.push(device.id);
-
-        events.emit({ type: 'device.classified', payload: { scanId, device } });
-        if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
-        else if (changes.length)
-          events.emit({ type: 'device.changed', payload: { scanId, device, changes } });
-
-        const prog = this.progress(scanId, {
-          devicesClassified: (sessions.get(scanId)?.devicesClassified ?? 0) + 1,
         });
-        if (prog) events.emit({ type: 'scan.progress', payload: prog });
-      });
 
-      // Surface devices the router knows about but this scan couldn't reach
-      // (other VLANs/subnets). They carry hostname/vendor/VLAN but no live ports.
+        hostsTotal += hosts.length;
+        hostsDiscovered += hosts.length;
+        const s = this.progress(scanId, {
+          status: 'fingerprinting',
+          hostsTotal,
+          hostsDiscovered,
+        });
+        if (s) events.emit({ type: 'scan.progress', payload: s });
+
+        const ptrMap = await batchReverseDns(
+          hosts.map((h) => h.ip),
+          this.deps.config.SCAN_CONCURRENCY,
+        );
+
+        await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
+          const lease = leaseFor(host.ip, host.mac);
+          const mac = host.mac ?? lease?.mac ?? null;
+          const depth = await this.resolveDepth(host.ip, mac, scanType);
+          const fp = await this.deps.fingerprint.execute({
+            ip: host.ip,
+            depth,
+            osDetection: depth !== 'quick' && this.deps.elevated,
+            timeoutMs: depth === 'deep' ? 60000 : depth === 'standard' ? 30000 : 15000,
+          });
+
+          const enrichment = await this.deps.enricher.enrich(host.ip, fp.services, host.signals);
+          const dhcp = mac ? this.deps.dhcpSource?.get(mac) : undefined;
+          let mergedSignals: Record<string, unknown> = { ...host.signals, ...enrichment.signals };
+          if (fp.signals) mergedSignals = { ...mergedSignals, ...fp.signals };
+          if (this.deps.passiveStore) {
+            const fromPassive = mergePassiveSignals(
+              this.deps.passiveStore.get(host.ip),
+              mac ? this.deps.passiveStore.getByMac(mac) : {},
+            );
+            mergedSignals = { ...fromPassive, ...mergedSignals };
+          }
+          if (dhcp) {
+            mergedSignals['dhcpFingerprint'] = dhcp.fingerprint;
+            mergedSignals['dhcpVendorClass'] = dhcp.vendorClass;
+            mergedSignals['dhcpHostname'] = dhcp.hostname;
+          }
+          if (lease?.interface) mergedSignals['routerInterface'] = lease.interface;
+          if (lease?.description) mergedSignals['routerDescription'] = lease.description;
+          if (lease?.interface) mergedSignals['pfsenseInterface'] = lease.interface;
+          if (lease?.description) mergedSignals['pfsenseDescription'] = lease.description;
+          Object.assign(mergedSignals, pfSenseSignals);
+          mergedSignals = applyConnectionSignals(mac, mergedSignals, this.deps.connectionSource);
+
+          const openPorts = new Set(fp.services.filter((svc) => svc.state === 'open').map((svc) => svc.port));
+          if (this.deps.snmp && (openPorts.has(161) || host.ip === subnetGateway)) {
+            const snmp = await this.deps.snmp.query(host.ip);
+            if (snmp) Object.assign(mergedSignals, this.deps.snmp.signalsFrom(snmp));
+          }
+
+          const hostname =
+            lease?.hostname ??
+            dhcp?.hostname ??
+            strSignal(mergedSignals, 'resolverCacheName') ??
+            strSignal(mergedSignals, 'netbiosName') ??
+            strSignal(mergedSignals, 'llmnrName') ??
+            strSignal(mergedSignals, 'lldpSystemName') ??
+            host.hostname ??
+            fp.hostname ??
+            enrichment.hostname ??
+            ptrMap.get(host.ip) ??
+            (await reverseDns(host.ip));
+
+          const fb = await this.resolveFingerbank(mac, hostname, mergedSignals);
+          if (fb) Object.assign(mergedSignals, fb);
+
+          const classification = this.deps.classify.execute({
+            ip: host.ip,
+            mac,
+            hostname,
+            os: fp.os,
+            services: fp.services,
+            vendorFromScan: fp.vendorFromScan ?? enrichment.vendor ?? null,
+            gatewayIp: subnetGateway,
+            signals: mergedSignals,
+          });
+
+          const snapshot: DeviceSnapshot = {
+            ip: host.ip,
+            mac,
+            vendor: classification.vendor,
+            brand: classification.brand,
+            model: classification.model,
+            hostname,
+            deviceType: classification.deviceType as DeviceSnapshot['deviceType'],
+            confidence: classification.confidence,
+            os: classification.os,
+            connectionType: classification.connectionType,
+            services: fp.services,
+            latencyMs: host.latencyMs,
+            securityFlags: classification.securityFlags,
+            signals: {
+              ...mergedSignals,
+              connectionBasis: classification.connectionBasis,
+              classification: classification.reasons,
+            },
+          };
+
+          const { device, isNew, changes } = await this.deps.upsert.execute(snapshot);
+          seenIds.push(device.id);
+
+          events.emit({ type: 'device.classified', payload: { scanId, device } });
+          if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
+          else if (changes.length)
+            events.emit({ type: 'device.changed', payload: { scanId, device, changes } });
+
+          const prog = this.progress(scanId, {
+            devicesClassified: (sessions.get(scanId)?.devicesClassified ?? 0) + 1,
+          });
+          if (prog) events.emit({ type: 'scan.progress', payload: prog });
+        });
+      }
+
       for (const lease of leases) {
         const key = lease.mac ?? lease.ip;
         if (!lease.ip || !lease.online || usedLeaseKeys.has(key)) continue;
@@ -263,7 +285,7 @@ export class RunScanUseCase {
           hostname: lease.hostname,
           deviceType: classification.deviceType as DeviceSnapshot['deviceType'],
           confidence: classification.confidence,
-          os: classification.os, // inferred from hostname (iOS/watchOS/macOS…)
+          os: classification.os,
           connectionType: classification.connectionType,
           services: [],
           latencyMs: null,
@@ -290,7 +312,10 @@ export class RunScanUseCase {
         finishedAt: new Date().toISOString(),
       });
       if (done) events.emit({ type: 'scan.completed', payload: done });
-      logger.info({ scanId, devices: seenIds.length }, 'scan completed');
+      logger.info(
+        { scanId, cidrs: cidrLabel, devices: seenIds.length },
+        'scan completed',
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.progress(scanId, { status: 'failed', error: message, finishedAt: new Date().toISOString() });
@@ -301,18 +326,19 @@ export class RunScanUseCase {
 
   /**
    * Light scan for background use: ping + ARP discovery only (no nmap/TCP).
-   * Re-uses stored services/ports and re-classifies with any new DHCP/Fingerbank data.
+   * Walks every configured CIDR and marks offline once at the end.
    */
-  async executeLight(scanId: string, cidr: Cidr): Promise<void> {
+  async executeLight(scanId: string, cidrs: Cidr | Cidr[]): Promise<void> {
+    const list = Array.isArray(cidrs) ? cidrs : [cidrs];
     const { sessions, events, logger } = this.deps;
-    const gatewayIp = this.inferGateway(cidr);
     const discover = this.deps.lightDiscover ?? this.deps.discover;
+    const cidrLabel = list.map((c) => c.toString()).join(',') || 'none';
 
     if (!sessions.get(scanId)) {
-      sessions.createWithId(scanId, cidr.toString(), 'quick');
+      sessions.createWithId(scanId, cidrLabel, 'quick');
     } else {
       sessions.update(scanId, {
-        cidr: cidr.toString(),
+        cidr: cidrLabel,
         scanType: 'quick',
         status: 'pending',
         hostsTotal: 0,
@@ -324,47 +350,128 @@ export class RunScanUseCase {
       });
     }
 
+    if (!list.length) {
+      this.progress(scanId, {
+        status: 'failed',
+        error: 'No CIDRs to scan',
+        finishedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
     try {
       this.progress(scanId, { status: 'discovering' });
       events.emit({ type: 'scan.started', payload: sessions.get(scanId)! });
 
-      const hosts = await discover.execute({
-        cidr,
-        concurrency: this.deps.config.SCAN_CONCURRENCY,
-        timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
-      });
-
-      this.progress(scanId, {
-        status: 'fingerprinting',
-        hostsTotal: hosts.length,
-        hostsDiscovered: hosts.length,
-      });
+      const leases = await this.fetchLeases();
+      const pfSenseSignals = this.pfSenseSignalExtras();
+      const leaseByMac = new Map<string, RouterLease>();
+      const leaseByIp = new Map<string, RouterLease>();
+      for (const lease of leases) {
+        if (lease.mac) leaseByMac.set(lease.mac, lease);
+        if (lease.ip) leaseByIp.set(lease.ip, lease);
+      }
+      const usedLeaseKeys = new Set<string>();
 
       const seenIds: string[] = [];
-      await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
-        const existing =
-          (host.mac ? await this.deps.repo.findByMac(host.mac) : null) ??
-          (await this.deps.repo.findByIp(host.ip));
+      let hostsTotal = 0;
 
-        const snapshot = await this.deps.enrichment.buildSnapshot({
-          ip: host.ip,
-          mac: host.mac,
-          hostname: host.hostname ?? existing?.hostname ?? null,
-          services: existing?.services ?? [],
-          os: existing?.os ?? null,
-          latencyMs: host.latencyMs,
-          signals: { ...existing?.signals, ...host.signals },
-          gatewayIp,
+      for (const cidr of list) {
+        const gatewayIp = this.inferGateway(cidr);
+        const hosts = await discover.execute({
+          cidr,
+          concurrency: this.deps.config.SCAN_CONCURRENCY,
+          timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
         });
 
-        const { device, isNew, changes } = await this.deps.upsert.execute(snapshot);
-        seenIds.push(device.id);
+        hostsTotal += hosts.length;
+        this.progress(scanId, {
+          status: 'fingerprinting',
+          hostsTotal,
+          hostsDiscovered: hostsTotal,
+        });
 
+        await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
+          const existing =
+            (host.mac ? await this.deps.repo.findByMac(host.mac) : null) ??
+            (await this.deps.repo.findByIp(host.ip));
+          const lease =
+            (host.mac ? leaseByMac.get(host.mac) : undefined) ?? leaseByIp.get(host.ip);
+          if (lease) usedLeaseKeys.add(lease.mac ?? lease.ip);
+          const mac = host.mac ?? lease?.mac ?? existing?.mac ?? null;
+
+          const signals: Record<string, unknown> = {
+            ...existing?.signals,
+            ...host.signals,
+            ...pfSenseSignals,
+          };
+          if (lease?.interface) {
+            signals['routerInterface'] = lease.interface;
+            signals['pfsenseInterface'] = lease.interface;
+          }
+          if (lease?.description) {
+            signals['routerDescription'] = lease.description;
+            signals['pfsenseDescription'] = lease.description;
+          }
+
+          const snapshot = await this.deps.enrichment.buildSnapshot({
+            ip: host.ip,
+            mac,
+            hostname: lease?.hostname ?? host.hostname ?? existing?.hostname ?? null,
+            services: existing?.services ?? [],
+            os: existing?.os ?? null,
+            latencyMs: host.latencyMs,
+            signals,
+            gatewayIp,
+          });
+
+          const { device, isNew, changes } = await this.deps.upsert.execute(snapshot);
+          seenIds.push(device.id);
+
+          events.emit({ type: 'device.classified', payload: { scanId, device } });
+          if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
+          else if (changes.length)
+            events.emit({ type: 'device.changed', payload: { scanId, device, changes } });
+
+          const prog = this.progress(scanId, {
+            devicesClassified: (sessions.get(scanId)?.devicesClassified ?? 0) + 1,
+          });
+          if (prog) events.emit({ type: 'scan.progress', payload: prog });
+        });
+      }
+
+      // Lease-only hosts (e.g. WAN CPE on ignored scan CIDRs) still need inventory + signals.
+      const gatewayIp = this.inferGateway(list[0]!);
+      for (const lease of leases) {
+        const key = lease.mac ?? lease.ip;
+        if (!lease.ip || !lease.online || usedLeaseKeys.has(key)) continue;
+        const existing =
+          (lease.mac ? await this.deps.repo.findByMac(lease.mac) : null) ??
+          (await this.deps.repo.findByIp(lease.ip));
+        const signals: Record<string, unknown> = {
+          ...existing?.signals,
+          pfsenseInterface: lease.interface,
+          pfsenseDescription: lease.description,
+          routerInterface: lease.interface,
+          routerDescription: lease.description,
+          source: 'pfsense-lease',
+          ...pfSenseSignals,
+        };
+        const snapshot = await this.deps.enrichment.buildSnapshot({
+          ip: lease.ip,
+          mac: lease.mac,
+          hostname: lease.hostname ?? existing?.hostname ?? null,
+          services: existing?.services ?? [],
+          os: existing?.os ?? null,
+          latencyMs: existing?.latencyMs ?? null,
+          signals,
+          gatewayIp,
+        });
+        const { device, isNew } = await this.deps.upsert.execute(snapshot);
+        seenIds.push(device.id);
         events.emit({ type: 'device.classified', payload: { scanId, device } });
         if (isNew) events.emit({ type: 'device.new', payload: { scanId, device } });
-        else if (changes.length)
-          events.emit({ type: 'device.changed', payload: { scanId, device, changes } });
-      });
+      }
 
       const offline = await this.deps.repo.markOfflineExcept(seenIds);
       for (const deviceId of offline) {
@@ -376,7 +483,7 @@ export class RunScanUseCase {
         finishedAt: new Date().toISOString(),
       });
       if (done) events.emit({ type: 'scan.completed', payload: done });
-      logger.info({ scanId, devices: seenIds.length }, 'light scan completed');
+      logger.info({ scanId, cidrs: cidrLabel, devices: seenIds.length }, 'light scan completed');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.progress(scanId, { status: 'failed', error: message, finishedAt: new Date().toISOString() });

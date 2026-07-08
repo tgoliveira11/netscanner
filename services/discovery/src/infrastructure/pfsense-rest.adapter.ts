@@ -8,6 +8,7 @@ import {
   applyInterfaceLabels,
   buildInterfaceLabelMap,
   enrichLeasesFromStaticMappings,
+  mergePfSenseGatewayRows,
   normalizePfSenseArpRow,
   normalizePfSenseDhcpRows,
   normalizePfSenseGatewayRow,
@@ -26,6 +27,8 @@ export interface PfSenseConfig {
 const DEFAULT_PATHS = {
   arp: '/api/v2/diagnostics/arp_table',
   gateways: '/api/v2/status/gateways',
+  /** Configured gateways (real next-hop when not `dynamic`). Status rows only have srcip. */
+  routingGateways: '/api/v2/routing/gateways',
   interfaces: '/api/v2/status/interfaces',
   staticMappings: '/api/v2/services/dhcp_server/static_mappings',
   version: '/api/v2/system/version',
@@ -59,15 +62,17 @@ export class PfSenseRestAdapter implements IRouterLeaseSource {
 
   private async refresh(): Promise<void> {
     const timeout = this.config.timeoutMs ?? 8000;
-    const [dhcpRaw, arpRaw, gwRaw, ifRaw, staticRaw, versionRaw, hostnameRaw] = await Promise.all([
-      this.getPath(this.config.leasesPath, timeout),
-      this.getPath(DEFAULT_PATHS.arp, timeout),
-      this.getPath(DEFAULT_PATHS.gateways, timeout),
-      this.getPath(DEFAULT_PATHS.interfaces, timeout),
-      this.getPath(DEFAULT_PATHS.staticMappings, timeout).catch(() => []),
-      this.getPathObject(DEFAULT_PATHS.version, timeout).catch(() => null),
-      this.getPathObject(DEFAULT_PATHS.hostname, timeout).catch(() => null),
-    ]);
+    const [dhcpRaw, arpRaw, gwRaw, routingGwRaw, ifRaw, staticRaw, versionRaw, hostnameRaw] =
+      await Promise.all([
+        this.getPath(this.config.leasesPath, timeout),
+        this.getPath(DEFAULT_PATHS.arp, timeout),
+        this.getPath(DEFAULT_PATHS.gateways, timeout),
+        this.getPath(DEFAULT_PATHS.routingGateways, timeout).catch(() => []),
+        this.getPath(DEFAULT_PATHS.interfaces, timeout),
+        this.getPath(DEFAULT_PATHS.staticMappings, timeout).catch(() => []),
+        this.getPathObject(DEFAULT_PATHS.version, timeout).catch(() => null),
+        this.getPathObject(DEFAULT_PATHS.hostname, timeout).catch(() => null),
+      ]);
 
     const dhcp = normalizePfSenseDhcpRows(this.extractArray(dhcpRaw));
     const arp = this.extractArray(arpRaw)
@@ -80,7 +85,9 @@ export class PfSenseRestAdapter implements IRouterLeaseSource {
     merged = enrichLeasesFromStaticMappings(merged, this.extractArray(staticRaw));
     merged = applyInterfaceLabels(merged, labelMap);
 
-    const gateways = this.extractArray(gwRaw).map((r) => normalizePfSenseGatewayRow(r));
+    const statusGateways = this.extractArray(gwRaw).map((r) => normalizePfSenseGatewayRow(r));
+    const configGateways = this.extractArray(routingGwRaw).map((r) => normalizePfSenseGatewayRow(r));
+    const gateways = mergePfSenseGatewayRows(statusGateways, configGateways);
     const version = strField(versionRaw, 'version') ?? strField(versionRaw, 'base');
     const hostname =
       strField(hostnameRaw, 'hostname') ??

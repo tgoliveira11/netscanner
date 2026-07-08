@@ -205,4 +205,42 @@ describe('ClassifyDeviceUseCase', () => {
     });
     expect(result.deviceType).toBe('streaming-device');
   });
+
+  it('classifies a pfSense self NIC as firewall from pfsenseInterfaces', () => {
+    const result = build().execute({
+      ip: '10.0.0.2',
+      mac: 'aa:bb:cc:00:00:60',
+      hostname: null,
+      os: null,
+      vendorFromScan: null,
+      services: [],
+      signals: {
+        pfsenseInterface: 'WAN_EXAMPLE',
+        pfsenseInterfaces: [
+          { name: 'opt1', descr: 'WAN_EXAMPLE', ipaddr: '10.0.0.2', mac: 'aa:bb:cc:00:00:60' },
+        ],
+        pfsenseGateways: [],
+      },
+    });
+    expect(result.deviceType).toBe('firewall');
+  });
+
+  it('classifies a WAN CPE (.1 on WAN*) as router, not firewall', () => {
+    const result = build().execute({
+      ip: '10.0.0.1',
+      mac: 'd4:92:5e:00:00:01',
+      hostname: null,
+      os: null,
+      vendorFromScan: null,
+      services: [],
+      signals: {
+        pfsenseInterface: 'WAN_EXAMPLE',
+        pfsenseInterfaces: [
+          { name: 'opt1', descr: 'WAN_EXAMPLE', ipaddr: '10.0.0.2', mac: 'aa:bb:cc:00:00:60' },
+        ],
+        pfsenseGateways: [{ name: 'WAN_EXAMPLE_DHCP', gateway: null, srcip: '10.0.0.2' }],
+      },
+    });
+    expect(result.deviceType).toBe('router');
+  });
 });

@@ -9,6 +9,11 @@ export type ScanStatus = z.infer<typeof ScanStatus>;
 export const StartScanRequestSchema = z.object({
   /** Target subnet in CIDR. If omitted, the gateway auto-detects the primary subnet. */
   cidr: z.string().optional(),
+  /**
+   * When true, scan every configured CIDR (local interfaces + SCAN_CIDRS).
+   * Ignores `cidr` when set.
+   */
+  allCidrs: z.boolean().optional().default(false),
   scanType: ScanType.default('standard'),
 });
 export type StartScanRequest = z.infer<typeof StartScanRequestSchema>;

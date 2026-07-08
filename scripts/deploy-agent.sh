@@ -10,8 +10,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export NETSCANNER_SRC="${NETSCANNER_SRC:-$ROOT}"
 
-if [ -x /usr/local/bin/netscanner-ctl ]; then
-  exec /usr/local/bin/netscanner-ctl deploy
-fi
-
+# Always use the repo ctl for deploy so BUILD_STATIC / rsync steps stay current.
+# (An older /usr/local/bin/netscanner-ctl may omit the static web build.)
 exec bash "$ROOT/scripts/netscanner-ctl.sh" deploy
