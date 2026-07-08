@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { io, type Socket } from 'socket.io-client';
 import type { Device, DomainEvent, ScanSession } from '@netscanner/contracts';
 import { api, apiBase } from './api';
+import { useTopologyStore } from './topology-store';
 
 export interface AlertItem {
   id: string;
@@ -11,6 +12,12 @@ export interface AlertItem {
   message: string;
   deviceId: string;
   at: string;
+}
+
+const PRESENCE_CHANGE = /^came online$|^went offline$/;
+
+function isPresenceOnlyChange(changes: string[]): boolean {
+  return changes.length > 0 && changes.every((c) => PRESENCE_CHANGE.test(c));
 }
 
 interface StoreState {
@@ -96,8 +103,11 @@ function handleEvent(
   switch (event.type) {
     case 'scan.started':
     case 'scan.progress':
+      set(() => ({ scan: event.payload }));
+      break;
     case 'scan.completed':
       set(() => ({ scan: event.payload }));
+      useTopologyStore.getState().invalidateStructure();
       break;
     case 'scan.failed':
       set((s) => ({ scan: s.scan ? { ...s.scan, status: 'failed', error: event.payload.error } : s.scan }));
@@ -107,6 +117,7 @@ function handleEvent(
       break;
     case 'device.new':
       set((s) => ({ devices: withDevice(s.devices, event.payload.device) }));
+      useTopologyStore.getState().invalidateStructure();
       pushAlert(set, {
         id: `${event.payload.device.id}-new-${Date.now()}`,
         kind: 'new',
@@ -117,18 +128,37 @@ function handleEvent(
       break;
     case 'device.changed':
       set((s) => ({ devices: withDevice(s.devices, event.payload.device) }));
-      pushAlert(set, {
-        id: `${event.payload.device.id}-chg-${Date.now()}`,
-        kind: 'changed',
-        message: `${event.payload.device.ip} changed: ${event.payload.changes.join('; ')}`,
-        deviceId: event.payload.device.id,
-        at: new Date().toISOString(),
-      });
+      if (!isPresenceOnlyChange(event.payload.changes)) {
+        pushAlert(set, {
+          id: `${event.payload.device.id}-chg-${Date.now()}`,
+          kind: 'changed',
+          message: `${event.payload.device.ip} changed: ${event.payload.changes.join('; ')}`,
+          deviceId: event.payload.device.id,
+          at: new Date().toISOString(),
+        });
+      }
       break;
-    case 'device.offline':
+    case 'device.offline': {
+      const device = event.payload.device;
       set((s) => {
+        if (device) return { devices: withDevice(s.devices, { ...device, isOnline: false }) };
         const d = s.devices[event.payload.deviceId];
         return d ? { devices: { ...s.devices, [d.id]: { ...d, isOnline: false } } } : {};
+      });
+      break;
+    }
+    case 'device.online':
+      set((s) => ({ devices: withDevice(s.devices, event.payload.device) }));
+      break;
+    case 'device.anomaly':
+      if (event.payload.code === 'NEW_EXTERNAL_DEST' || event.payload.code === 'DEVICE_OFFLINE') break;
+      set((s) => ({ devices: withDevice(s.devices, event.payload.device) }));
+      pushAlert(set, {
+        id: `${event.payload.device.id}-anom-${event.payload.code}-${Date.now()}`,
+        kind: 'security',
+        message: event.payload.message,
+        deviceId: event.payload.device.id,
+        at: new Date().toISOString(),
       });
       break;
   }

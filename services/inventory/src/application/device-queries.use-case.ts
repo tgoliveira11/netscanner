@@ -1,12 +1,26 @@
 import type { Device } from '@netscanner/contracts';
 import type { DeviceFilter, IDeviceRepository } from '../domain/device-repository.js';
 import { toPublicDevice, type StoredDevice } from '../domain/device-public.js';
+import { collapseInfrastructureAliases } from '../domain/infrastructure-aliases.js';
+
+export interface DeviceListOptions extends DeviceFilter {
+  /** When true (default), hide secondary NICs of multi-homed routers/firewalls. */
+  collapseInfrastructureAliases?: boolean;
+  preferredInfrastructureIp?: string | null;
+}
 
 /** Read-side use cases (queries) kept separate from the write side (CQRS-lite). */
 export class ListDevicesUseCase {
   constructor(private readonly repo: IDeviceRepository) {}
-  execute(filter?: DeviceFilter): Promise<Device[]> {
-    return this.repo.list(filter);
+  async execute(options?: DeviceListOptions): Promise<Device[]> {
+    const {
+      collapseInfrastructureAliases: collapse = true,
+      preferredInfrastructureIp,
+      ...filter
+    } = options ?? {};
+    const devices = await this.repo.list(filter);
+    if (!collapse) return devices;
+    return collapseInfrastructureAliases(devices, { preferredIp: preferredInfrastructureIp });
   }
 }
 

@@ -51,7 +51,7 @@ export function DeviceTable() {
           ))}
         </select>
       </div>
-      <div className="max-h-[540px] overflow-auto">
+      <div className="max-h-[calc(2.5rem+3.25rem*50)] overflow-auto">
         <table className="w-full text-left text-sm">
           <thead className="sticky top-0 bg-panelup text-xs uppercase text-muted">
             <tr>

@@ -30,4 +30,9 @@ export interface IDeviceRepository {
   listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]>;
   /** Mark devices not in the provided id set as offline; returns their ids. */
   markOfflineExcept(onlineIds: string[]): Promise<string[]>;
+  /** Lightweight online/offline update without a full scan enrichment. */
+  updatePresence(
+    id: string,
+    patch: { isOnline: boolean; latencyMs?: number | null },
+  ): Promise<Device | null>;
 }

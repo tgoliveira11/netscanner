@@ -7,7 +7,6 @@ import { ScanControls } from '../components/ScanControls';
 import { StatsBar } from '../components/StatsBar';
 import { DeviceTable } from '../components/DeviceTable';
 import { DeviceDrawer } from '../components/DeviceDrawer';
-import { TopologyView } from '../components/TopologyView';
 
 export default function DashboardPage() {
   const bootstrap = useStore((s) => s.bootstrap);
@@ -24,9 +23,6 @@ export default function DashboardPage() {
       <ScanControls />
       <StatsBar />
       <DeviceTable />
-      <div className="min-h-[680px]">
-        <TopologyView />
-      </div>
       <DeviceDrawer />
       <footer className="pt-2 text-center text-xs text-muted">
         Connection type (wired/WiFi) is reported as “unknown” unless a router integration provides it — it

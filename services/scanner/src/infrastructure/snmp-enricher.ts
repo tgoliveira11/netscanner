@@ -2,10 +2,12 @@ import type { ICommandRunner } from '@netscanner/os-abstraction';
 import type { Logger } from '@netscanner/logger';
 import type { SnmpV3Config } from './snmp-client.js';
 import { SnmpClient } from './snmp-client.js';
+import { resolveSnmpObjectId } from '../domain/snmp-oid-catalog.js';
 
 export interface SnmpResult {
   sysDescr: string | null;
   sysName: string | null;
+  sysObjectId: string | null;
   hrSystemUptime: string | null;
   hrDeviceStatus: string | null;
   prtGeneralPrinterName: string | null;
@@ -51,6 +53,7 @@ export class SnmpEnricher {
     return {
       sysDescr: lines[0] ?? null,
       sysName: lines[1] ?? lines[0] ?? null,
+      sysObjectId: lines[4] ?? null,
       hrSystemUptime: lines[2] ?? null,
       hrDeviceStatus: lines[3] ?? null,
       prtGeneralPrinterName: prtName,
@@ -58,9 +61,14 @@ export class SnmpEnricher {
   }
 
   signalsFrom(result: SnmpResult): Record<string, unknown> {
+    const oidHint = resolveSnmpObjectId(result.sysObjectId);
     return {
       snmpSysDescr: result.sysDescr,
       snmpSysName: result.sysName,
+      snmpSysObjectId: result.sysObjectId,
+      snmpOidVendor: oidHint.vendor,
+      snmpOidModelHint: oidHint.modelHint,
+      snmpOidDeviceType: oidHint.deviceType,
       snmpHrUptime: result.hrSystemUptime,
       snmpHrDeviceStatus: result.hrDeviceStatus,
       snmpPrinterName: result.prtGeneralPrinterName,

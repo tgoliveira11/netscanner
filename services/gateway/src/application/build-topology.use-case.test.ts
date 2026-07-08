@@ -13,6 +13,7 @@ import {
   pickWiredInfra,
   resolveClientAttachment,
   resolveWiredParent,
+  topologyRevision,
   wiredEdge,
 } from './build-topology.use-case.js';
 
@@ -89,6 +90,33 @@ describe('pickGateway', () => {
       baseDevice({ id: 'gw', ip: '10.0.10.1', deviceType: 'router', signals: { pfsenseHostname: 'pfsense' } }),
     ];
     expect(pickGateway(devices, [], {} as never)!.id).toBe('gw');
+  });
+
+  it('prefers collapsed multi-homed firewall over other .1 routers', () => {
+    const devices = [
+      baseDevice({ id: 'isp', ip: '192.168.15.1', deviceType: 'router' }),
+      baseDevice({
+        id: 'pfsense',
+        ip: '192.168.50.1',
+        deviceType: 'firewall',
+        signals: {
+          infrastructureIps: ['192.168.0.135', '192.168.40.1', '192.168.50.1', '192.168.52.1'],
+        },
+      }),
+    ];
+    expect(pickGateway(devices, [], { PFSENSE_URL: 'https://192.168.51.1' } as never)!.id).toBe('pfsense');
+  });
+
+  it('matches PFSENSE_URL against infrastructureIps on collapsed gateway', () => {
+    const devices = [
+      baseDevice({
+        id: 'pfsense',
+        ip: '192.168.50.1',
+        deviceType: 'firewall',
+        signals: { infrastructureIps: ['192.168.50.1', '192.168.51.1', '192.168.52.1'] },
+      }),
+    ];
+    expect(pickGateway(devices, [], { PFSENSE_URL: 'https://192.168.51.1' } as never)!.id).toBe('pfsense');
   });
 });
 
@@ -383,5 +411,25 @@ describe('collectVlans', () => {
       wiredEdge('e', 'b', 'uplink', { id: 'LAN_INFRA', label: 'LAN_INFRA' }),
     ];
     expect(collectVlans(edges).map((v) => v.id)).toEqual(['LAN_INFRA', 'LAN_MAIN', 'LAN_IOT']);
+  });
+});
+
+describe('topologyRevision', () => {
+  it('is stable for the same graph and changes when edges change', () => {
+    const base = {
+      gatewayId: 'gw',
+      edges: [wiredEdge('a', 'gw', 'lan', { id: 'LAN_MAIN', label: 'LAN_MAIN' })],
+      nodes: [{ id: 'gw', role: 'gateway' as const, tier: 0 }],
+      vlans: [{ id: 'LAN_MAIN', label: 'LAN_MAIN' }],
+      ssids: [],
+    };
+    const a = topologyRevision(base);
+    const b = topologyRevision(base);
+    expect(a).toBe(b);
+    const c = topologyRevision({
+      ...base,
+      edges: [...base.edges, wiredEdge('b', 'gw', 'lan', { id: 'LAN_MAIN', label: 'LAN_MAIN' })],
+    });
+    expect(c).not.toBe(a);
   });
 });
