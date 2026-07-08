@@ -1,4 +1,5 @@
 import type { Device } from '@netscanner/contracts';
+import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { DeviceFilter, IDeviceRepository } from '../domain/device-repository.js';
 import { toPublicDevice, type StoredDevice } from '../domain/device-public.js';
 import { collapseInfrastructureAliases } from '../domain/infrastructure-aliases.js';
@@ -60,7 +61,7 @@ export class UpdateDeviceMetaUseCase {
         input.routerScrapeUser === undefined ? existing.routerScrapeUser ?? null : input.routerScrapeUser,
       routerScrapePassword: password,
     };
-    await this.repo.save(updated);
+    await this.repo.save(updated, existing.siteId ?? LEGACY_DEFAULT_SITE_ID);
     return toPublicDevice(updated);
   }
 }

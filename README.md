@@ -103,6 +103,12 @@ pnpm dev:web
 Open http://localhost:3000, confirm the subnet (auto-detected), pick a depth, and
 **Start scan**. Devices stream in and classify live.
 
+### Deployment profiles
+
+See **[docs/deployment-profiles.md](docs/deployment-profiles.md)** for ready-made
+`config.env` setups: standalone scan, pfSense only, pfSense + managed switch, and
+multi-VLAN home lab (`TOPOLOGY_MODE=vlan`).
+
 For OS detection: `sudo pnpm dev:api` (nmap `-O` needs elevation).
 
 If Prisma isn't set up, the gateway automatically falls back to in-memory storage

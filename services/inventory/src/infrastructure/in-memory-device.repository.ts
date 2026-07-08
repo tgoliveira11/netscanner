@@ -7,15 +7,15 @@ import type { StoredDevice } from '../domain/device-public.js';
  * Implements the same port as the Prisma adapter (LSP), so callers are agnostic.
  */
 export class InMemoryDeviceRepository implements IDeviceRepository {
-  private readonly devices = new Map<string, StoredDevice>();
+  private readonly devices = new Map<string, StoredDevice & { siteId: string }>();
 
-  async findByMac(mac: string): Promise<Device | null> {
-    const found = [...this.devices.values()].find((d) => d.mac === mac);
+  async findByMac(siteId: string, mac: string): Promise<Device | null> {
+    const found = [...this.devices.values()].find((d) => d.siteId === siteId && d.mac === mac);
     return found ? stripStored(found) : null;
   }
 
-  async findByIp(ip: string): Promise<Device | null> {
-    const found = [...this.devices.values()].find((d) => d.ip === ip);
+  async findByIp(siteId: string, ip: string): Promise<Device | null> {
+    const found = [...this.devices.values()].find((d) => d.siteId === siteId && d.ip === ip);
     return found ? stripStored(found) : null;
   }
 
@@ -25,15 +25,19 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
   }
 
   async findStoredById(id: string): Promise<StoredDevice | null> {
-    return this.devices.get(id) ?? null;
+    const stored = this.devices.get(id);
+    if (!stored) return null;
+    const { siteId: _s, ...rest } = stored;
+    return rest;
   }
 
-  async save(device: Device | StoredDevice): Promise<void> {
-    this.devices.set(device.id, device as StoredDevice);
+  async save(device: Device | StoredDevice, siteId: string): Promise<void> {
+    this.devices.set(device.id, { ...(device as StoredDevice), siteId });
   }
 
   async list(filter?: DeviceFilter): Promise<Device[]> {
     let items = [...this.devices.values()];
+    if (filter?.siteId) items = items.filter((d) => d.siteId === filter.siteId);
     if (filter?.deviceType) items = items.filter((d) => d.deviceType === filter.deviceType);
     if (filter?.onlineOnly) items = items.filter((d) => d.isOnline);
     if (filter?.search) {
@@ -45,9 +49,12 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
     return items.sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true })).map(stripStored);
   }
 
-  async listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]> {
+  async listRouterScrapeCredentials(siteId: string): Promise<RouterScrapeCredential[]> {
     return [...this.devices.values()]
-      .filter((d) => d.routerScrapeUser && d.routerScrapePassword)
+      .filter(
+        (d) =>
+          d.siteId === siteId && d.routerScrapeUser && d.routerScrapePassword,
+      )
       .map((d) => ({
         ip: d.ip,
         deviceType: d.deviceType,
@@ -57,10 +64,11 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
       }));
   }
 
-  async markOfflineExcept(onlineIds: string[]): Promise<string[]> {
+  async markOfflineExcept(onlineIds: string[], siteId: string): Promise<string[]> {
     const keep = new Set(onlineIds);
     const changed: string[] = [];
     for (const device of this.devices.values()) {
+      if (device.siteId !== siteId) continue;
       if (!keep.has(device.id) && device.isOnline) {
         this.devices.set(device.id, { ...device, isOnline: false });
         changed.push(device.id);
@@ -75,7 +83,7 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
   ): Promise<Device | null> {
     const stored = this.devices.get(id);
     if (!stored) return null;
-    const next: StoredDevice = {
+    const next = {
       ...stored,
       isOnline: patch.isOnline,
       latencyMs: patch.latencyMs === undefined ? stored.latencyMs : patch.latencyMs,

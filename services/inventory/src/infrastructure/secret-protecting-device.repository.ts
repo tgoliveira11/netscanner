@@ -1,4 +1,5 @@
 import type { Device } from '@netscanner/contracts';
+import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { DeviceFilter, IDeviceRepository, RouterScrapeCredential } from '../domain/device-repository.js';
 import type { StoredDevice } from '../domain/device-public.js';
 import { toPublicDevice } from '../domain/device-public.js';
@@ -14,12 +15,12 @@ export class SecretProtectingDeviceRepository implements IDeviceRepository {
     private readonly cipher: SecretCipher,
   ) {}
 
-  findByMac(mac: string): Promise<Device | null> {
-    return this.inner.findByMac(mac);
+  findByMac(siteId: string, mac: string): Promise<Device | null> {
+    return this.inner.findByMac(siteId, mac);
   }
 
-  findByIp(ip: string): Promise<Device | null> {
-    return this.inner.findByIp(ip);
+  findByIp(siteId: string, ip: string): Promise<Device | null> {
+    return this.inner.findByIp(siteId, ip);
   }
 
   findById(id: string): Promise<Device | null> {
@@ -31,29 +32,30 @@ export class SecretProtectingDeviceRepository implements IDeviceRepository {
     return stored ? this.decryptStored(stored) : null;
   }
 
-  async save(device: Device | StoredDevice): Promise<void> {
+  async save(device: Device | StoredDevice, siteId: string): Promise<void> {
     const stored = device as StoredDevice;
     const next: StoredDevice = {
       ...(stored as StoredDevice),
+      siteId: stored.siteId ?? siteId,
       routerScrapePassword: this.encryptField(stored.routerScrapePassword),
     };
-    await this.inner.save(next);
+    await this.inner.save(next, siteId);
   }
 
   list(filter?: DeviceFilter): Promise<Device[]> {
     return this.inner.list(filter);
   }
 
-  async listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]> {
-    const rows = await this.inner.listRouterScrapeCredentials();
+  async listRouterScrapeCredentials(siteId: string): Promise<RouterScrapeCredential[]> {
+    const rows = await this.inner.listRouterScrapeCredentials(siteId);
     return rows.map((row) => ({
       ...row,
       routerScrapePassword: this.decryptField(row.routerScrapePassword),
     }));
   }
 
-  markOfflineExcept(onlineIds: string[]): Promise<string[]> {
-    return this.inner.markOfflineExcept(onlineIds);
+  markOfflineExcept(onlineIds: string[], siteId: string): Promise<string[]> {
+    return this.inner.markOfflineExcept(onlineIds, siteId);
   }
 
   updatePresence(
@@ -71,7 +73,7 @@ export class SecretProtectingDeviceRepository implements IDeviceRepository {
       const stored = await this.inner.findStoredById(device.id);
       if (!stored?.routerScrapePassword) continue;
       if (isEncryptedSecret(stored.routerScrapePassword)) continue;
-      await this.save(stored);
+      await this.save(stored, stored.siteId ?? LEGACY_DEFAULT_SITE_ID);
       migrated += 1;
     }
     return migrated;

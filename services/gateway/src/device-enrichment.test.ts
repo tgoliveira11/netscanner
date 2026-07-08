@@ -32,6 +32,8 @@ const baseDevice = (over: Partial<Device> = {}): Device => ({
   ...over,
 });
 
+const siteDeps = { getSiteId: () => '00000000-0000-4000-8000-000000000001' as const };
+
 describe('DeviceEnrichmentService', () => {
   const dhcpSource = {
     get: (mac: string) =>
@@ -46,6 +48,7 @@ describe('DeviceEnrichmentService', () => {
       upsert: { execute: async () => ({}) } as never,
       repo: {} as never,
       dhcpSource: dhcpSource as never,
+      ...siteDeps,
     });
     expect(svc.needsEnrichment(baseDevice())).toBe(true);
     expect(
@@ -64,6 +67,7 @@ describe('DeviceEnrichmentService', () => {
       classify: { execute: () => ({}) } as never,
       upsert: { execute: async () => ({}) } as never,
       repo: {} as never,
+      ...siteDeps,
     });
     const weekMs = 7 * 24 * 60 * 60 * 1000;
     expect(svc.needsPortRescan(baseDevice(), weekMs)).toBe(true);
@@ -103,6 +107,7 @@ describe('DeviceEnrichmentService', () => {
       upsert: { execute: async () => ({}) } as never,
       repo: {} as never,
       trafficMonitor,
+      ...siteDeps,
     });
 
     const snapshot = await svc.buildSnapshot({

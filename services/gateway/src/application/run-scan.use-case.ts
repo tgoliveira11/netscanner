@@ -45,6 +45,7 @@ export interface RunScanDeps {
   config: AppConfig;
   elevated: boolean;
   dnsActivityLog?: DnsActivityLog;
+  getSiteId: () => string;
 }
 
 const DEPTH_BY_TYPE: Record<ScanType, ScanDepth> = {
@@ -72,6 +73,7 @@ export class RunScanUseCase {
    */
   async executeMany(scanId: string, cidrs: Cidr[], scanType: ScanType): Promise<void> {
     const { sessions, events, logger } = this.deps;
+    const siteId = this.deps.getSiteId();
     if (!cidrs.length) {
       this.progress(scanId, {
         status: 'failed',
@@ -211,7 +213,7 @@ export class RunScanUseCase {
             vendorFromScan: fp.vendorFromScan ?? enrichment.vendor ?? null,
           });
 
-          const result = await this.deps.upsert.execute(snapshot);
+          const result = await this.deps.upsert.execute(siteId, snapshot);
           seenIds.push(result.device.id);
           emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
 
@@ -241,12 +243,12 @@ export class RunScanUseCase {
           signals,
           gatewayIp,
         });
-        const result = await this.deps.upsert.execute(snapshot);
+        const result = await this.deps.upsert.execute(siteId, snapshot);
         seenIds.push(result.device.id);
         emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
       }
 
-      const offline = await this.deps.repo.markOfflineExcept(seenIds);
+      const offline = await this.deps.repo.markOfflineExcept(seenIds, siteId);
       for (const deviceId of offline) {
         const device = await this.deps.repo.findById(deviceId);
         events.emit({
@@ -279,6 +281,7 @@ export class RunScanUseCase {
   async executeLight(scanId: string, cidrs: Cidr | Cidr[]): Promise<void> {
     const list = Array.isArray(cidrs) ? cidrs : [cidrs];
     const { sessions, events, logger } = this.deps;
+    const siteId = this.deps.getSiteId();
     const discover = this.deps.lightDiscover ?? this.deps.discover;
     const cidrLabel = list.map((c) => c.toString()).join(',') || 'none';
 
@@ -342,8 +345,8 @@ export class RunScanUseCase {
 
         await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
           const existing =
-            (host.mac ? await this.deps.repo.findByMac(host.mac) : null) ??
-            (await this.deps.repo.findByIp(host.ip));
+            (host.mac ? await this.deps.repo.findByMac(siteId, host.mac) : null) ??
+            (await this.deps.repo.findByIp(siteId, host.ip));
           const lease =
             (host.mac ? leaseByMac.get(host.mac) : undefined) ?? leaseByIp.get(host.ip);
           if (lease) usedLeaseKeys.add(lease.mac ?? lease.ip);
@@ -374,7 +377,7 @@ export class RunScanUseCase {
             gatewayIp,
           });
 
-          const result = await this.deps.upsert.execute(snapshot);
+          const result = await this.deps.upsert.execute(siteId, snapshot);
           seenIds.push(result.device.id);
           emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
 
@@ -391,8 +394,8 @@ export class RunScanUseCase {
         const key = lease.mac ?? lease.ip;
         if (!lease.ip || !lease.online || usedLeaseKeys.has(key)) continue;
         const existing =
-          (lease.mac ? await this.deps.repo.findByMac(lease.mac) : null) ??
-          (await this.deps.repo.findByIp(lease.ip));
+          (lease.mac ? await this.deps.repo.findByMac(siteId, lease.mac) : null) ??
+          (await this.deps.repo.findByIp(siteId, lease.ip));
         const signals: Record<string, unknown> = {
           ...existing?.signals,
           pfsenseInterface: lease.interface,
@@ -412,12 +415,12 @@ export class RunScanUseCase {
           signals,
           gatewayIp,
         });
-        const result = await this.deps.upsert.execute(snapshot);
+        const result = await this.deps.upsert.execute(siteId, snapshot);
         seenIds.push(result.device.id);
         emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
       }
 
-      const offline = await this.deps.repo.markOfflineExcept(seenIds);
+      const offline = await this.deps.repo.markOfflineExcept(seenIds, siteId);
       for (const deviceId of offline) {
         const device = await this.deps.repo.findById(deviceId);
         events.emit({
@@ -462,8 +465,10 @@ export class RunScanUseCase {
       return base;
     }
 
+    const siteId = this.deps.getSiteId();
     const existing: Device | null =
-      (mac ? await this.deps.repo.findByMac(mac) : null) ?? (await this.deps.repo.findByIp(ip));
+      (mac ? await this.deps.repo.findByMac(siteId, mac) : null) ??
+      (await this.deps.repo.findByIp(siteId, ip));
     if (!existing) return base;
 
     const scannedAt = existing.signals['portScanAt'] ?? existing.lastSeen;

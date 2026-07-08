@@ -11,14 +11,16 @@ import { DeviceMapper, type DeviceRow } from './device-mapper.js';
 export class PrismaDeviceRepository implements IDeviceRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async findByMac(mac: string): Promise<Device | null> {
-    const row = await this.prisma.deviceRecord.findUnique({ where: { mac } });
+  async findByMac(siteId: string, mac: string): Promise<Device | null> {
+    const row = await this.prisma.deviceRecord.findFirst({
+      where: { siteId, mac },
+    });
     return row ? DeviceMapper.toDomain(row as DeviceRow) : null;
   }
 
-  async findByIp(ip: string): Promise<Device | null> {
+  async findByIp(siteId: string, ip: string): Promise<Device | null> {
     const row = await this.prisma.deviceRecord.findFirst({
-      where: { ip },
+      where: { siteId, ip },
       orderBy: { lastSeen: 'desc' },
     });
     return row ? DeviceMapper.toDomain(row as DeviceRow) : null;
@@ -34,8 +36,8 @@ export class PrismaDeviceRepository implements IDeviceRepository {
     return row ? DeviceMapper.toStored(row as DeviceRow) : null;
   }
 
-  async save(device: Device | StoredDevice): Promise<void> {
-    const row = DeviceMapper.toRow(device);
+  async save(device: Device | StoredDevice, siteId: string): Promise<void> {
+    const row = DeviceMapper.toRow(device, siteId);
     await this.prisma.deviceRecord.upsert({
       where: { id: row.id },
       create: row,
@@ -46,6 +48,7 @@ export class PrismaDeviceRepository implements IDeviceRepository {
   async list(filter?: DeviceFilter): Promise<Device[]> {
     const rows = await this.prisma.deviceRecord.findMany({
       where: {
+        siteId: filter?.siteId,
         deviceType: filter?.deviceType,
         isOnline: filter?.onlineOnly ? true : undefined,
         ...(filter?.search
@@ -65,9 +68,13 @@ export class PrismaDeviceRepository implements IDeviceRepository {
     return rows.map((r) => DeviceMapper.toDomain(r as DeviceRow));
   }
 
-  async listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]> {
+  async listRouterScrapeCredentials(siteId: string): Promise<RouterScrapeCredential[]> {
     const rows = await this.prisma.deviceRecord.findMany({
-      where: { routerScrapeUser: { not: null }, routerScrapePassword: { not: null } },
+      where: {
+        siteId,
+        routerScrapeUser: { not: null },
+        routerScrapePassword: { not: null },
+      },
       select: {
         ip: true,
         deviceType: true,
@@ -87,9 +94,13 @@ export class PrismaDeviceRepository implements IDeviceRepository {
       }));
   }
 
-  async markOfflineExcept(onlineIds: string[]): Promise<string[]> {
+  async markOfflineExcept(onlineIds: string[], siteId: string): Promise<string[]> {
     const stale = await this.prisma.deviceRecord.findMany({
-      where: { id: { notIn: onlineIds }, isOnline: true },
+      where: {
+        siteId,
+        id: { notIn: onlineIds },
+        isOnline: true,
+      },
       select: { id: true },
     });
     if (stale.length) {

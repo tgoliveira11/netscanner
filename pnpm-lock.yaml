@@ -66,6 +66,9 @@ importers:
 
   packages/config:
     dependencies:
+      '@netscanner/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -89,6 +92,9 @@ importers:
 
   packages/os-abstraction:
     dependencies:
+      '@netscanner/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@netscanner/kernel':
         specifier: workspace:*
         version: link:../kernel
@@ -177,6 +183,9 @@ importers:
 
   services/inventory:
     dependencies:
+      '@netscanner/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@netscanner/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

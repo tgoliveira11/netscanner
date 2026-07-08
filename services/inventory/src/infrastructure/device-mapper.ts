@@ -4,6 +4,7 @@ import type { StoredDevice } from '../domain/device-public.js';
 /** Shape of a persisted row (matches the Prisma DeviceRecord model). */
 export interface DeviceRow {
   id: string;
+  siteId: string;
   ip: string;
   mac: string | null;
   vendor: string | null;
@@ -32,6 +33,7 @@ export const DeviceMapper = {
   toStored(row: DeviceRow): StoredDevice {
     return {
       ...DeviceMapper.toDomain(row),
+      siteId: row.siteId,
       routerScrapePassword: row.routerScrapePassword,
     };
   },
@@ -63,9 +65,10 @@ export const DeviceMapper = {
     });
   },
 
-  toRow(device: Device): DeviceRow {
+  toRow(device: Device, siteId: string): DeviceRow {
     return {
       id: device.id,
+      siteId,
       ip: device.ip,
       mac: device.mac,
       vendor: device.vendor,

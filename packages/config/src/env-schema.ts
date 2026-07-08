@@ -97,10 +97,35 @@ export const EnvSchema = z.object({
   ROUTER_SCRAPE_PASSWORD: z.string().optional(),
   /** Semicolon-separated scrape targets: url|kind|user|password (password may contain |). */
   ROUTER_SCRAPE_TARGETS: z.string().optional(),
+  /**
+   * Topology layout: `simple` = pfSense → switch → clients (generic).
+   * `vlan` = multi-VLAN tree with optional WiFi APs per segment (advanced home lab).
+   */
+  TOPOLOGY_MODE: z.enum(['simple', 'vlan']).default('simple'),
+  /** Comma-separated pfSense interface labels for VLAN display order (vlan mode). */
+  TOPOLOGY_VLAN_ORDER: z.string().default(''),
+  /** pfSense interface label for the wired switch / infra segment (vlan mode). */
+  TOPOLOGY_WIRED_VLAN: z.string().default(''),
+  /** IP prefix for Mac Internet Sharing clients shown as a side branch. */
+  TOPOLOGY_MAC_SHARING_PREFIX: z.string().default('192.168.64.'),
   MAC_DNS_CACHE_ENABLED: envBool(true),
   PROTOCOL_PROBE_ENABLED: envBool(true),
   AGENT_CONTROL_TOKEN: z.string().optional(),
   /** Shared secret for pfSense package push (Bearer token). */
+  /** Periodic WAN speed test (Cloudflare endpoints) for reporting. */
+  SPEED_TEST_ENABLED: envBool(true),
+  SPEED_TEST_INTERVAL_MS: z.coerce.number().default(3_600_000),
+  SPEED_TEST_DOWNLOAD_BYTES: z.coerce.number().default(10_000_000),
+  SPEED_TEST_UPLOAD_BYTES: z.coerce.number().default(5_000_000),
+  SPEED_TEST_URL: z.string().default('https://speed.cloudflare.com'),
+  /** Auto-create a site when fingerprint does not match any known site. */
+  SITE_AUTO_CREATE: envBool(true),
+  /** Minimum score (0–1) to accept an automatic site match. */
+  SITE_MATCH_THRESHOLD: z.coerce.number().default(0.85),
+  /** Minimum score to show ambiguous confirmation UI. */
+  SITE_AMBIGUOUS_THRESHOLD: z.coerce.number().default(0.6),
+  /** Ignore geolocation for site matching when VPN/tunnel is detected. */
+  SITE_VPN_IGNORE_GEO: envBool(true),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

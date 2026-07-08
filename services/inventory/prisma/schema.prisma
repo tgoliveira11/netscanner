@@ -9,10 +9,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/** A recognized network location (home, office, hotel…) with isolated inventory. */
+model NetworkSiteRecord {
+  id               String   @id
+  name             String
+  slug             String   @unique
+  createdAt        DateTime @default(now())
+  lastSeenAt       DateTime
+  fingerprintJson  String   @default("{}")
+  integrationsJson String   @default("{}")
+  isDefault        Boolean  @default(false)
+
+  devices      DeviceRecord[]
+  speedTests   SpeedTestRecord[]
+}
+
 model DeviceRecord {
   id                       String   @id
+  siteId                   String   @default("00000000-0000-4000-8000-000000000001")
+  site                     NetworkSiteRecord @relation(fields: [siteId], references: [id], onDelete: Cascade)
   ip                       String
-  mac                      String?  @unique
+  mac                      String?
   vendor                   String?
   brand                    String?
   model                    String?
@@ -34,24 +51,50 @@ model DeviceRecord {
   firstSeen                DateTime
   lastSeen                 DateTime
 
-  @@index([ip])
+  @@unique([siteId, mac])
+  @@index([siteId, ip])
+  @@index([siteId, isOnline])
   @@index([deviceType])
 }
 
 /** Passive DHCP fingerprints captured by the root sniffer — survives restarts. */
 model DhcpFingerprintRecord {
-  mac          String   @id
+  siteId       String   @default("00000000-0000-4000-8000-000000000001")
+  mac          String
   fingerprint  String
   vendorClass  String?
   hostname     String?
   capturedAt   DateTime
+
+  @@id([siteId, mac])
 }
 
 /** mDNS / SSDP / LLDP signals observed passively — survives restarts. */
 model PassiveSignalRecord {
-  ip          String   @id
+  siteId      String   @default("00000000-0000-4000-8000-000000000001")
+  ip          String
   mac         String?
   hostname    String?
   signalsJson String   @default("{}")
   updatedAt   DateTime @updatedAt
+
+  @@id([siteId, ip])
+}
+
+/** Periodic WAN speed samples for reporting (download/upload/latency). */
+model SpeedTestRecord {
+  id            String   @id
+  siteId        String   @default("00000000-0000-4000-8000-000000000001")
+  site          NetworkSiteRecord? @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  measuredAt    DateTime @default(now())
+  downloadMbps  Float?
+  uploadMbps    Float?
+  latencyMs     Float?
+  downloadBytes Int?
+  uploadBytes   Int?
+  server        String   @default("cloudflare")
+  trigger       String   @default("background")
+  error         String?
+
+  @@index([siteId, measuredAt])
 }

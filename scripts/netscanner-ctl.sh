@@ -72,12 +72,16 @@ cmd_deploy() {
   echo "[netscanner-ctl] rsync $SRC → $NS"
   rsync -a --exclude node_modules --exclude .next --exclude out --exclude '*.db' \
     "$SRC/packages" "$SRC/services" "$SRC/apps" "$NS/"
+  rsync -a "$SRC/pnpm-lock.yaml" "$SRC/pnpm-workspace.yaml" "$SRC/package.json" "$NS/"
+  if [ -f "$SRC/turbo.json" ]; then
+    rsync -a "$SRC/turbo.json" "$NS/"
+  fi
   echo "[netscanner-ctl] pnpm install"
   (cd "$NS" && CI=1 pnpm install --prod=false --force)
   echo "[netscanner-ctl] build static dashboard"
   (cd "$NS" && BUILD_STATIC=1 pnpm --filter @netscanner/web build)
   echo "[netscanner-ctl] prisma db push"
-  (cd "$NS/services/inventory" && DATABASE_URL="file:./netscanner.db" pnpm db:push)
+  (cd "$NS/services/inventory" && DATABASE_URL="file:./netscanner.db" pnpm exec prisma db push --accept-data-loss)
   cmd_restart
 }
 
