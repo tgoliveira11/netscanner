@@ -1,0 +1,15 @@
+@dir etc/inc/priv
+@dir usr/local/bin
+@dir usr/local/etc/netscanner
+@dir usr/local/pkg
+@dir usr/local/share/pfSense-pkg-NetScanner
+@dir usr/local/www/packages/netscanner
+etc/inc/priv/netscanner.priv.inc
+usr/local/bin/netscanner-collect
+usr/local/bin/netscanner-collect.php
+usr/local/etc/netscanner/agent.conf.example
+usr/local/pkg/configure-pfsense.php
+usr/local/pkg/netscanner.inc
+usr/local/pkg/netscanner.xml
+usr/local/share/pfSense-pkg-NetScanner/info.xml
+usr/local/www/packages/netscanner/index.php
