@@ -8,6 +8,7 @@ async function main(): Promise<void> {
   container.passiveListeners?.start();
   container.backgroundWorker.start();
   container.presenceMonitor.start();
+  container.speedTestWorker.start();
   const app = await buildServer(container);
 
   const { GATEWAY_PORT, GATEWAY_HOST } = container.config;

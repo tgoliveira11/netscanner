@@ -77,7 +77,7 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
 
   /** OpenWrt LuCI wireless/SSID probe for all configured ROUTER_SCRAPE targets. */
   app.get('/api/admin/wireless', async () => {
-    const creds = await c.repo.listRouterScrapeCredentials();
+    const creds = await c.repo.listRouterScrapeCredentials(c.activeSite.getActiveSiteId() ?? '00000000-0000-4000-8000-000000000001');
     const targets = mergeRouterScrapeTargets(
       c.config,
       creds.map((row) => ({

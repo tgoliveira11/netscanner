@@ -2,6 +2,20 @@ import type { Traffic } from '@netscanner/contracts';
 import type { ITrafficSource, TrafficSample } from '../domain/traffic-source.js';
 import { RateCalculator } from '../domain/traffic-source.js';
 
+function isPublicIp(ip: string): boolean {
+  return !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.)/.test(ip);
+}
+
+/** True when pfSense state table shows active WAN traffic (not just scanner ping noise). */
+export function trafficSuggestsAlive(traffic: Traffic | null | undefined): boolean {
+  if (!traffic) return false;
+  if (traffic.rateBps > 0) return true;
+  for (const peer of traffic.topPeers ?? []) {
+    if (isPublicIp(peer.ip) && peer.bytes > 256) return true;
+  }
+  return false;
+}
+
 /** Latest per-IP traffic counters + derived rate from successive pf samples. */
 export class TrafficMonitor {
   private readonly rates = new RateCalculator();

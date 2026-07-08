@@ -10,6 +10,7 @@ export interface RouterScrapeCredential {
 }
 
 export interface DeviceFilter {
+  siteId?: string;
   search?: string;
   deviceType?: string;
   onlineOnly?: boolean;
@@ -21,15 +22,15 @@ export interface DeviceFilter {
  * (an in-memory fake is used in tests).
  */
 export interface IDeviceRepository {
-  findByMac(mac: string): Promise<Device | null>;
-  findByIp(ip: string): Promise<Device | null>;
+  findByMac(siteId: string, mac: string): Promise<Device | null>;
+  findByIp(siteId: string, ip: string): Promise<Device | null>;
   findById(id: string): Promise<Device | null>;
   findStoredById(id: string): Promise<StoredDevice | null>;
-  save(device: Device | StoredDevice): Promise<void>;
+  save(device: Device | StoredDevice, siteId: string): Promise<void>;
   list(filter?: DeviceFilter): Promise<Device[]>;
-  listRouterScrapeCredentials(): Promise<RouterScrapeCredential[]>;
-  /** Mark devices not in the provided id set as offline; returns their ids. */
-  markOfflineExcept(onlineIds: string[]): Promise<string[]>;
+  listRouterScrapeCredentials(siteId: string): Promise<RouterScrapeCredential[]>;
+  /** Mark devices not in the provided id set as offline within a site; returns their ids. */
+  markOfflineExcept(onlineIds: string[], siteId: string): Promise<string[]>;
   /** Lightweight online/offline update without a full scan enrichment. */
   updatePresence(
     id: string,

@@ -108,3 +108,31 @@ describe('parseRestFirewallStates', () => {
     expect(samples.some((s) => s.ip === '1.2.3.4')).toBe(false);
   });
 });
+
+describe('trafficSuggestsAlive', () => {
+  it('ignores LAN-only peers from scanner noise', async () => {
+    const { trafficSuggestsAlive } = await import('./infrastructure/traffic-monitor.js');
+    expect(
+      trafficSuggestsAlive({
+        bytesIn: 168,
+        bytesOut: 0,
+        rateBps: 0,
+        connections: 2,
+        topPeers: [{ ip: '10.0.51.106', bytes: 168 }],
+      }),
+    ).toBe(false);
+  });
+
+  it('treats active WAN peers as alive', async () => {
+    const { trafficSuggestsAlive } = await import('./infrastructure/traffic-monitor.js');
+    expect(
+      trafficSuggestsAlive({
+        bytesIn: 1000,
+        bytesOut: 500,
+        rateBps: 0,
+        connections: 1,
+        topPeers: [{ ip: '35.161.158.54', bytes: 4000 }],
+      }),
+    ).toBe(true);
+  });
+});

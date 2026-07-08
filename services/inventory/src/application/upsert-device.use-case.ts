@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import type { ConnectionType, Device, OsGuess, SecurityFlag, ServiceInfo } from '@netscanner/contracts';
+import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IDeviceRepository } from '../domain/device-repository.js';
 import type { StoredDevice } from '../domain/device-public.js';
 import { toPublicDevice } from '../domain/device-public.js';
@@ -57,15 +58,12 @@ export class UpsertDeviceUseCase {
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  async execute(snapshot: DeviceSnapshot): Promise<UpsertResult> {
+  async execute(siteId: string, snapshot: DeviceSnapshot): Promise<UpsertResult> {
+    const sid = siteId || LEGACY_DEFAULT_SITE_ID;
     const now = this.clock().toISOString();
-    // Identify by MAC first (stable across DHCP), falling back to IP. The IP
-    // fallback is essential: a host first seen without a resolved MAC creates an
-    // IP-keyed record, and a later scan that *does* resolve the MAC must update
-    // that same record rather than create a duplicate.
     const existing =
-      (snapshot.mac ? await this.repo.findByMac(snapshot.mac) : null) ??
-      (await this.repo.findByIp(snapshot.ip));
+      (snapshot.mac ? await this.repo.findByMac(sid, snapshot.mac) : null) ??
+      (await this.repo.findByIp(sid, snapshot.ip));
     const stored = existing ? await this.repo.findStoredById(existing.id) : null;
 
     if (!stored) {
@@ -92,7 +90,7 @@ export class UpsertDeviceUseCase {
           isOnline: true,
         } as Device),
       };
-      await this.repo.save(device);
+      await this.repo.save(device, sid);
       return { device: toPublicDevice(device as StoredDevice), isNew: true, changes: [], anomalies: [] };
     }
 
@@ -131,7 +129,7 @@ export class UpsertDeviceUseCase {
     const changes = diffDevice(stored, next);
     const anomalies = detectBehavioralAnomalies(stored, next);
     next.signals = updateBaseline({ ...next, signals: next.signals });
-    await this.repo.save(next);
+    await this.repo.save(next, sid);
     return { device: toPublicDevice(next), isNew: false, changes, anomalies };
   }
 

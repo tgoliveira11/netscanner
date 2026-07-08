@@ -1,5 +1,5 @@
 import type { AppConfig } from '@netscanner/config';
-import { mergeRouterScrapeTargets } from '@netscanner/config';
+import { mergeRouterScrapeTargets, resolveTopologyConfig, sortTopologyVlans, type TopologyConfig } from '@netscanner/config';
 import type {
   Device,
   IConnectionSource,
@@ -47,8 +47,6 @@ function finalizeTopology(
   return { ...body, revision: topologyRevision(body) };
 }
 
-const CORE_VLAN_ORDER = ['VLAN40', 'VLAN10', 'VLAN30', 'VLAN20'] as const;
-const MAC_SHARING_PREFIX = '192.168.64.';
 const WIRELESS_PROBE_TTL_MS = 5 * 60_000;
 
 interface PfSenseGatewaySignal {
@@ -59,17 +57,11 @@ interface PfSenseGatewaySignal {
 }
 
 /**
- * Builds a VLAN-centric home topology from inventory + pfSense interface tags +
- * optional OpenWrt wireless probes:
+ * Builds a home topology from inventory + pfSense interface tags +
+ * optional router wireless probes (OpenWrt LuCI or kind:compal targets).
  *
- *   ISP modem(s)  →  pfSense (gateway)
- *     ├── VLAN40  → wired switch/router
- *     ├── VLAN10   → WiFi AP → clients
- *     ├── VLAN30  → WiFi AP → clients
- *     ├── VLAN20    → WiFi AP → clients
- *     └── Mac host   → Mac Internet Sharing clients (192.168.64.x)
- *
- * VPN overlays stay out of the main tree. pfSense self-NICs are never leaf clients.
+ * **simple** (default): pfSense → managed switch → clients.
+ * **vlan**: multi-segment tree; set TOPOLOGY_VLAN_ORDER and TOPOLOGY_WIRED_VLAN.
  */
 export class BuildTopologyUseCase {
   private wirelessCache: {
@@ -80,11 +72,16 @@ export class BuildTopologyUseCase {
 
   constructor(
     private readonly repo: IDeviceRepository,
-    private readonly config: AppConfig,
+    private readonly getConfig: () => AppConfig,
+    private readonly getSiteId: () => string,
     private readonly logger: Logger,
     private readonly connectionSource?: IConnectionSource,
     private readonly listLocalInterfaces: () => LocalInterface[] = () => [],
   ) {}
+
+  private get config(): AppConfig {
+    return this.getConfig();
+  }
 
   async execute(options?: { since?: string }): Promise<TopologyResponse> {
     if (options?.since && this.cached?.revision === options.since) {
@@ -110,7 +107,8 @@ export class BuildTopologyUseCase {
       }
     }
 
-    const raw = await this.repo.list();
+    const raw = await this.repo.list({ siteId: this.getSiteId() });
+    const topology = resolveTopologyConfig(this.config);
     const preferredIp =
       hostFromUrl(this.config.PFSENSE_URL ?? '') || this.config.ROUTER_SNMP_HOST || null;
     // Match /api/devices list — collapsed IDs so the UI store can resolve gateway + nodes.
@@ -164,9 +162,9 @@ export class BuildTopologyUseCase {
     nodes.push({ id: gateway.id, role: 'gateway', tier: wanModems.length > 0 ? 1 : 0, wifiCapable: false });
     placed.add(gateway.id);
 
-    const switchDevice = pickWiredInfra(devices, gateway, eligibility, this.config, this.connectionSource);
-    const wifiAps = pickWifiAccessPoints(devices, gateway, eligibility, wireless, scrapeTargets);
-    const macShareHost = pickMacSharingHost(devices, localIfaces);
+    const switchDevice = pickWiredInfra(devices, gateway, eligibility, this.config, topology, this.connectionSource);
+    const wifiAps = pickWifiAccessPoints(devices, gateway, eligibility, wireless, scrapeTargets, topology);
+    const macShareHost = pickMacSharingHost(devices, localIfaces, topology.macSharingPrefix);
 
     if (switchDevice) {
       const vlan = resolveDeviceVlan(switchDevice);
@@ -211,6 +209,7 @@ export class BuildTopologyUseCase {
         wifiAps,
         apByVlan,
         wireless,
+        topology,
       });
       if (attachment && attachment.parentId !== macShareHost.id) {
         edges.push(
@@ -247,7 +246,7 @@ export class BuildTopologyUseCase {
       if (isVpnOverlayIp(device.ip)) continue;
 
       // Mac Internet Sharing clients hang under the sharing Mac, not pfSense.
-      if (isMacSharingIp(device.ip)) {
+      if (isMacSharingIp(device.ip, topology.macSharingPrefix)) {
         if (!macShareHost || device.id === macShareHost.id) continue;
         if (isLocalScannerDevice(device, localIfaces)) continue;
         edges.push(
@@ -281,6 +280,7 @@ export class BuildTopologyUseCase {
         wifiAps,
         apByVlan,
         wireless,
+        topology,
       });
       if (!attachment || attachment.parentId === device.id) continue;
 
@@ -314,7 +314,7 @@ export class BuildTopologyUseCase {
       gatewayId: gateway.id,
       edges,
       ssids,
-      vlans: collectVlans(edges),
+      vlans: collectVlans(edges, topology.vlanOrder),
       nodes,
     });
     this.cached = result;
@@ -322,7 +322,7 @@ export class BuildTopologyUseCase {
   }
 
   private async resolveScrapeTargets(): Promise<RouterScrapeTarget[]> {
-    const creds = await this.repo.listRouterScrapeCredentials();
+    const creds = await this.repo.listRouterScrapeCredentials(this.getSiteId());
     return mergeRouterScrapeTargets(
       this.config,
       creds.map((row) => ({
@@ -427,8 +427,10 @@ export function pickWiredInfra(
   gateway: Device,
   eligibility: TopologyEligibilityContext,
   config: AppConfig,
+  topology: TopologyConfig,
   connectionSource?: IConnectionSource,
 ): Device | null {
+  const wiredVlan = topology.wiredVlan;
   const candidates = devices.filter((d) => {
     if (d.id === gateway.id) return false;
     if (d.deviceType !== 'router' && d.deviceType !== 'switch') return false;
@@ -442,25 +444,22 @@ export function pickWiredInfra(
     if (vlan.startsWith('WAN') || vlan === 'LAN') return false;
 
     if (config.SNMP_SWITCH_HOST && d.ip === config.SNMP_SWITCH_HOST) return true;
-    if (eligibility.managedRouterIps.has(d.ip) && !looksLikeWifiAp(d, [], [])) {
-      const wifiish =
-        d.brand?.toLowerCase().includes('compal') ||
-        d.brand?.toLowerCase().includes('openwrt') ||
-        (d.hostname ?? '').toLowerCase().startsWith('cbnre');
-      if (wifiish) return false;
+    if (eligibility.managedRouterIps.has(d.ip) && !looksLikeWifiAp(d, [], [], topology)) {
       return true;
     }
 
-    if (vlan === 'VLAN40') return true;
+    if (topology.mode === 'vlan' && wiredVlan && vlan === wiredVlan) return true;
 
     const snmp = lookupSnmp(d, connectionSource);
-    if (snmp?.type === 'wired' && !looksLikeWifiAp(d, [], [])) return true;
+    if (snmp?.type === 'wired' && !looksLikeWifiAp(d, [], [], topology)) return true;
     return false;
   });
 
   return (
     candidates.find((d) => d.ip === config.SNMP_SWITCH_HOST) ??
-    candidates.find((d) => resolveDeviceVlan(d).id === 'VLAN40') ??
+    (topology.mode === 'vlan' && wiredVlan
+      ? candidates.find((d) => resolveDeviceVlan(d).id === wiredVlan)
+      : null) ??
     candidates[0] ??
     null
   );
@@ -472,7 +471,17 @@ export function pickWifiAccessPoints(
   eligibility: TopologyEligibilityContext,
   wireless: Awaited<ReturnType<typeof probeOpenWrtWireless>>,
   scrapeTargets: RouterScrapeTarget[],
+  topology: TopologyConfig,
 ): Device[] {
+  if (topology.mode === 'simple' && scrapeTargets.length === 0) {
+    return devices.filter(
+      (d) =>
+        d.deviceType === 'access-point' &&
+        d.id !== gateway.id &&
+        !isPfSenseSelfNic(d) &&
+        !isWanModemCandidate(d),
+    );
+  }
   return devices.filter((d) => {
     if (d.id === gateway.id) return false;
     if (d.deviceType !== 'router' && d.deviceType !== 'access-point') return false;
@@ -481,7 +490,7 @@ export function pickWifiAccessPoints(
     if (isWanModemCandidate(d)) return false;
     if (isVpnOverlayIp(d.ip) || isMacSharingIp(d.ip) || isWanHandoffIp(d.ip)) return false;
     if (isWanOrUnusedSegment(resolveDeviceVlan(d).id)) return false;
-    return looksLikeWifiAp(d, wireless, scrapeTargets);
+    return looksLikeWifiAp(d, wireless, scrapeTargets, topology);
   });
 }
 
@@ -489,17 +498,13 @@ export function looksLikeWifiAp(
   device: Device,
   wireless: Awaited<ReturnType<typeof probeOpenWrtWireless>>,
   scrapeTargets: RouterScrapeTarget[],
+  topology: TopologyConfig,
 ): boolean {
   const probe = wireless.find((w) => w.host === device.ip);
   if (probe?.ok && probe.wifiCapable) return true;
-  if (scrapeTargets.some((t) => hostFromUrl(t.baseUrl) === device.ip && t.kind === 'compal')) {
-    return true;
-  }
-  const brand = (device.brand ?? '').toLowerCase();
-  const host = (device.hostname ?? '').toLowerCase();
-  if (brand.includes('compal') || brand.includes('openwrt')) return true;
-  if (host.startsWith('cbnre')) return true;
+  if (scrapeTargets.some((t) => hostFromUrl(t.baseUrl) === device.ip)) return true;
   if (device.deviceType === 'access-point') return true;
+  if (topology.mode === 'simple') return false;
   return false;
 }
 
@@ -555,18 +560,21 @@ export function isWanModemCandidate(device: Device): boolean {
 export function pickMacSharingHost(
   devices: Device[],
   localIfaces: LocalInterface[],
+  macSharingPrefix = '192.168.64.',
 ): Device | null {
   const hasSharingNet =
-    localIfaces.some((i) => i.address.startsWith(MAC_SHARING_PREFIX) || /bridge/i.test(i.name)) ||
-    devices.some((d) => isMacSharingIp(d.ip));
+    localIfaces.some((i) => i.address.startsWith(macSharingPrefix) || /bridge/i.test(i.name)) ||
+    devices.some((d) => isMacSharingIp(d.ip, macSharingPrefix));
   if (!hasSharingNet) return null;
 
-  // Prefer a non-sharing-subnet address of the scanner that also appears in inventory
-  // (the Mac on the home LAN). Match by LAN IP first — WiFi MACs are often randomized
-  // and will not equal the bridge100 MAC.
   const lanLocalIps = new Set(
     localIfaces
-      .filter((i) => !isMacSharingIp(i.address) && !isVpnOverlayIp(i.address) && !/(bridge|utun|awdl)/i.test(i.name))
+      .filter(
+        (i) =>
+          !isMacSharingIp(i.address, macSharingPrefix) &&
+          !isVpnOverlayIp(i.address) &&
+          !/(bridge|utun|awdl)/i.test(i.name),
+      )
       .map((i) => i.address),
   );
   const localMacs = new Set(
@@ -576,17 +584,16 @@ export function pickMacSharingHost(
   const lanHost =
     devices.find(
       (d) =>
-        !isMacSharingIp(d.ip) &&
+        !isMacSharingIp(d.ip, macSharingPrefix) &&
         !isVpnOverlayIp(d.ip) &&
         !isWanHandoffIp(d.ip) &&
         (lanLocalIps.has(d.ip) || (d.mac != null && localMacs.has(normalizeMac(d.mac) ?? ''))),
     ) ?? null;
   if (lanHost) return lanHost;
 
-  // Fallback: the Mac Sharing gateway (.1 / bridge addr) as the parent node.
   return (
-    devices.find((d) => isLocalScannerDevice(d, localIfaces) && isMacSharingIp(d.ip)) ??
-    devices.find((d) => d.ip === `${MAC_SHARING_PREFIX}1`) ??
+    devices.find((d) => isLocalScannerDevice(d, localIfaces) && isMacSharingIp(d.ip, macSharingPrefix)) ??
+    devices.find((d) => d.ip === `${macSharingPrefix}1`) ??
     null
   );
 }
@@ -616,16 +623,16 @@ export function isTopologyClient(
 }
 
 /** @deprecated Prefer isVpnOverlayIp / isMacSharingIp / isWanHandoffIp / isWanModemCandidate. */
-export function isWanOrSideIp(ip: string): boolean {
-  return isWanHandoffIp(ip) || isMacSharingIp(ip) || isVpnOverlayIp(ip);
+export function isWanOrSideIp(ip: string, macSharingPrefix = '192.168.64.'): boolean {
+  return isWanHandoffIp(ip) || isMacSharingIp(ip, macSharingPrefix) || isVpnOverlayIp(ip);
 }
 
 export function isVpnOverlayIp(ip: string): boolean {
   return ip.startsWith('10.8.') || ip.startsWith('10.14.');
 }
 
-export function isMacSharingIp(ip: string): boolean {
-  return ip.startsWith(MAC_SHARING_PREFIX);
+export function isMacSharingIp(ip: string, prefix = '192.168.64.'): boolean {
+  return ip.startsWith(prefix);
 }
 
 /** Typical ISP handoff / CPE management segment (not auto-scanned). */
@@ -742,7 +749,7 @@ function edge(
   };
 }
 
-export function collectVlans(edges: TopologyEdge[]): TopologyVlan[] {
+export function collectVlans(edges: TopologyEdge[], vlanOrder: string[] = []): TopologyVlan[] {
   const seen = new Map<string, string>();
   for (const edge of edges) {
     if (!edge.vlan) continue;
@@ -750,14 +757,10 @@ export function collectVlans(edges: TopologyEdge[]): TopologyVlan[] {
     if (edge.vlan === 'MAC_SHARING') continue;
     seen.set(edge.vlan, edge.vlanLabel ?? edge.vlan);
   }
-  return [...seen.entries()]
-    .map(([id, label]) => ({ id, label }))
-    .sort((a, b) => {
-      const ai = CORE_VLAN_ORDER.indexOf(a.id as (typeof CORE_VLAN_ORDER)[number]);
-      const bi = CORE_VLAN_ORDER.indexOf(b.id as (typeof CORE_VLAN_ORDER)[number]);
-      if (ai >= 0 || bi >= 0) return (ai >= 0 ? ai : 99) - (bi >= 0 ? bi : 99);
-      return a.label.localeCompare(b.label);
-    });
+  return sortTopologyVlans(
+    [...seen.entries()].map(([id, label]) => ({ id, label })),
+    vlanOrder,
+  );
 }
 
 /**
@@ -778,6 +781,7 @@ export function resolveClientAttachment(input: {
   wifiAps: Device[];
   apByVlan: Map<string, Device>;
   wireless: Awaited<ReturnType<typeof probeOpenWrtWireless>>;
+  topology: TopologyConfig;
 }): {
   parentId: string;
   kind: TopologyEdge['kind'];
@@ -785,7 +789,8 @@ export function resolveClientAttachment(input: {
   ssid?: string;
   wifiCapable: boolean;
 } | null {
-  const { device, vlan, snmp, switchDevice, gateway, wifiAps, apByVlan, wireless } = input;
+  const { device, vlan, snmp, switchDevice, gateway, wifiAps, apByVlan, wireless, topology } = input;
+  const wiredVlan = topology.wiredVlan;
 
   // Authoritative: MAC learned on a switch access port → hang under the switch.
   if (snmp?.type === 'wired' && switchDevice) {
@@ -815,7 +820,9 @@ export function resolveClientAttachment(input: {
   if (isWired) {
     if (
       switchDevice &&
-      (vlan.id === 'VLAN40' || sameIpv4Slash24(device.ip, switchDevice.ip))
+      (topology.mode === 'simple' ||
+        sameIpv4Slash24(device.ip, switchDevice.ip) ||
+        (wiredVlan && vlan.id === wiredVlan))
     ) {
       return {
         parentId: switchDevice.id,
