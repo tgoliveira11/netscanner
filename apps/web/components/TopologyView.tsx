@@ -418,8 +418,10 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
               const from = nodeById.get(edge.from);
               const to = nodeById.get(edge.to);
               if (!from || !to) return null;
-              const online = from.device.isOnline && to.device.isOnline;
-              const style = edgeStroke(edge, online, colors);
+              const parentOnline = to.device.isOnline;
+              const childOnline = from.device.isOnline;
+              const style = edgeStroke(edge, parentOnline && childOnline, colors);
+              const opacity = !parentOnline ? 0.28 : childOnline ? 0.75 : 0.52;
               return (
                 <g key={`${edge.from}-${edge.to}-${edge.kind}`}>
                   <line
@@ -430,7 +432,7 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
                     stroke={style.stroke}
                     strokeWidth={style.width}
                     strokeDasharray={style.dash}
-                    opacity={online ? 0.75 : 0.28}
+                    opacity={opacity}
                   />
                 </g>
               );

@@ -1,7 +1,7 @@
 import type { Device } from '@netscanner/contracts';
 
-/** Device as stored internally (includes router scrape password). */
-export type StoredDevice = Device & { routerScrapePassword?: string | null };
+/** Device as stored internally (includes site scope and router scrape password). */
+export type StoredDevice = Device & { siteId?: string; routerScrapePassword?: string | null };
 
 export function toPublicDevice(device: StoredDevice): Device {
   const { routerScrapePassword, ...rest } = device as StoredDevice & { routerScrapePassword?: string | null };

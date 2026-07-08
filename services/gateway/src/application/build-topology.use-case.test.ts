@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Device } from '@netscanner/contracts';
+import type { TopologyConfig } from '@netscanner/config';
 import {
   collectVlans,
   isPfSenseSelfNic,
@@ -16,6 +17,20 @@ import {
   topologyRevision,
   wiredEdge,
 } from './build-topology.use-case.js';
+
+const vlanLabTopology = (): TopologyConfig => ({
+  mode: 'vlan',
+  vlanOrder: ['LAN_INFRA', 'LAN_MAIN', 'LAN_GUEST', 'LAN_IOT'],
+  wiredVlan: 'LAN_INFRA',
+  macSharingPrefix: '192.168.64.',
+});
+
+const simpleTopology = (): TopologyConfig => ({
+  mode: 'simple',
+  vlanOrder: [],
+  wiredVlan: null,
+  macSharingPrefix: '192.168.64.',
+});
 
 const syntheticIfaces = [
   {
@@ -128,7 +143,7 @@ describe('pickWiredInfra / pickWifiAccessPoints', () => {
     gatewayId: 'gw',
   };
 
-  it('picks Ubiquiti on LAN_INFRA as wired infra', () => {
+  it('picks SNMP switch as wired infra in vlan mode', () => {
     const sw = baseDevice({
       id: 'sw',
       ip: '10.0.10.2',
@@ -148,11 +163,11 @@ describe('pickWiredInfra / pickWifiAccessPoints', () => {
     expect(
       pickWiredInfra([gateway, sw, ap], gateway, eligibility, {
         SNMP_SWITCH_HOST: '10.0.10.2',
-      } as never)?.id,
+      } as never, vlanLabTopology())?.id,
     ).toBe('sw');
   });
 
-  it('picks Compal cbnre* as wifi APs', () => {
+  it('picks WiFi APs only from explicit scrape targets in vlan mode', () => {
     const devices = [
       gateway,
       baseDevice({
@@ -182,8 +197,24 @@ describe('pickWiredInfra / pickWifiAccessPoints', () => {
     const aps = pickWifiAccessPoints(devices, gateway, eligibility, [], [
       { baseUrl: 'http://10.0.1.101', kind: 'compal', username: 'u', password: 'p' },
       { baseUrl: 'http://10.0.3.100', kind: 'compal', username: 'u', password: 'p' },
-    ]);
+    ], vlanLabTopology());
     expect(aps.map((a) => a.id).sort()).toEqual(['ap-iot', 'ap-main']);
+  });
+
+  it('simple mode ignores hostname heuristics without scrape targets', () => {
+    expect(
+      pickWifiAccessPoints(
+        [
+          gateway,
+          baseDevice({ id: 'ap', ip: '10.0.1.101', hostname: 'cbnre-example', deviceType: 'router' }),
+        ],
+        gateway,
+        eligibility,
+        [],
+        [],
+        simpleTopology(),
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -283,7 +314,7 @@ describe('isTopologyClient', () => {
     expect(isTopologyClient(baseDevice({ id: 'r', ip: '10.0.1.101', deviceType: 'router' }), gw, [])).toBe(
       false,
     );
-    expect(isWanOrSideIp('10.0.0.1')).toBe(false); // not classic 192.168.0 handoff in synthetic lab
+    expect(isWanOrSideIp('10.0.0.1')).toBe(false);
     expect(isWanOrSideIp('192.168.0.1')).toBe(true);
     expect(isWanOrSideIp('192.168.64.2')).toBe(true);
     expect(isWanOrSideIp('10.8.8.4')).toBe(true);
@@ -292,21 +323,31 @@ describe('isTopologyClient', () => {
 });
 
 describe('looksLikeWifiAp', () => {
-  it('detects cbnre hostnames and compal scrape', () => {
+  it('requires explicit scrape target or access-point type', () => {
     expect(
       looksLikeWifiAp(
         baseDevice({ id: 'ap', ip: '10.0.2.101', hostname: 'cbnre-example', deviceType: 'router' }),
         [],
         [],
+        vlanLabTopology(),
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeWifiAp(
+        baseDevice({ id: 'ap', ip: '10.0.2.101', deviceType: 'access-point' }),
+        [],
+        [],
+        simpleTopology(),
       ),
     ).toBe(true);
     expect(
       looksLikeWifiAp(
-        baseDevice({ id: 'sw', ip: '10.0.10.2', brand: 'Ubiquiti', deviceType: 'router' }),
+        baseDevice({ id: 'ap', ip: '10.0.2.101', deviceType: 'router' }),
         [],
-        [],
+        [{ baseUrl: 'http://10.0.2.101', kind: 'compal' }],
+        vlanLabTopology(),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -355,6 +396,7 @@ describe('resolveClientAttachment', () => {
       wifiAps: [ap],
       apByVlan,
       wireless: [],
+      topology: vlanLabTopology(),
     });
     expect(result).toMatchObject({ parentId: 'sw', kind: 'wired', label: 'eth1' });
   });
@@ -376,11 +418,12 @@ describe('resolveClientAttachment', () => {
         wifiAps: [ap],
         apByVlan,
         wireless: [],
+        topology: vlanLabTopology(),
       })?.parentId,
     ).toBe('ap');
   });
 
-  it('hangs non-SNMP wired LAN_MAIN clients under gateway, not the switch', () => {
+  it('hangs non-SNMP wired LAN_MAIN clients under gateway in vlan mode', () => {
     const desktop = baseDevice({
       id: 'pc',
       ip: '10.0.1.50',
@@ -397,20 +440,45 @@ describe('resolveClientAttachment', () => {
         wifiAps: [ap],
         apByVlan,
         wireless: [],
+        topology: vlanLabTopology(),
       }),
     ).toMatchObject({ parentId: 'gw', kind: 'wired' });
+  });
+
+  it('hangs wired clients under switch in simple mode when switch exists', () => {
+    const desktop = baseDevice({
+      id: 'pc',
+      ip: '10.0.1.50',
+      connectionType: 'wired',
+      signals: { pfsenseInterface: 'LAN' },
+    });
+    expect(
+      resolveClientAttachment({
+        device: desktop,
+        vlan: { id: 'LAN', label: 'LAN' },
+        snmp: null,
+        switchDevice,
+        gateway,
+        wifiAps: [],
+        apByVlan: new Map(),
+        wireless: [],
+        topology: simpleTopology(),
+      }),
+    ).toMatchObject({ parentId: 'sw', kind: 'wired' });
   });
 });
 
 describe('collectVlans', () => {
-  it('orders core VLANs and skips WAN', () => {
+  it('orders VLANs from config and skips WAN', () => {
     const edges = [
       wiredEdge('a', 'b', 'uplink', { id: 'LAN_IOT', label: 'LAN_IOT' }),
       wiredEdge('c', 'b', 'uplink', { id: 'LAN_MAIN', label: 'LAN_MAIN' }),
       wiredEdge('d', 'b', 'uplink', { id: 'WAN', label: 'WAN' }),
       wiredEdge('e', 'b', 'uplink', { id: 'LAN_INFRA', label: 'LAN_INFRA' }),
     ];
-    expect(collectVlans(edges).map((v) => v.id)).toEqual(['LAN_INFRA', 'LAN_MAIN', 'LAN_IOT']);
+    expect(
+      collectVlans(edges, ['LAN_INFRA', 'LAN_MAIN', 'LAN_GUEST', 'LAN_IOT']).map((v) => v.id),
+    ).toEqual(['LAN_INFRA', 'LAN_MAIN', 'LAN_IOT']);
   });
 });
 

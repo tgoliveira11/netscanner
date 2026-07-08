@@ -4,6 +4,8 @@ import {
   StartScanRequestSchema,
   UpdateDeviceRequestSchema,
   ExportFormat,
+  SpeedTestListQuerySchema,
+  SpeedTestReportQuerySchema,
   type HealthResponse,
 } from '@netscanner/contracts';
 import type { Container } from '../container.js';
@@ -11,6 +13,7 @@ import { resolvePfSenseTelemetry } from '@netscanner/discovery';
 import { RunScanUseCase } from '../application/run-scan.use-case.js';
 import { authorizeAgentControl } from './agent-control.js';
 import { registerAdminRoutes } from './admin-routes.js';
+import { registerSiteRoutes } from './site-routes.js';
 
 const VERSION = '0.1.0';
 
@@ -29,6 +32,7 @@ function hostFromUrl(baseUrl: string): string {
  */
 export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Container): void {
   registerAdminRoutes(app, c);
+  registerSiteRoutes(app, c);
   app.get('/api/health', async (_request, reply): Promise<HealthResponse> => {
     reply.header('access-control-allow-origin', '*');
     return {
@@ -128,6 +132,10 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
       dhcpPersisted: persistedDhcp,
       passiveSignals: persistedPassive,
       activeScan: active ? { id: active.id, status: active.status, cidr: active.cidr } : null,
+      speedTestEnabled: c.config.SPEED_TEST_ENABLED,
+      speedTestIntervalMs: c.config.SPEED_TEST_INTERVAL_MS,
+      speedTestRunning: c.runSpeedTest.isRunning(),
+      activeSite: c.activeSite.state(),
     };
   });
 
@@ -148,6 +156,15 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     if (c.sessions.activeScan()) {
       return reply.status(409).send({ error: 'A scan is already running.' });
     }
+
+    if (c.activeSite.needsConfirmation()) {
+      return reply.status(409).send({
+        error: 'Network site ambiguous — confirm or lock a site before scanning.',
+        active: c.activeSite.state(),
+      });
+    }
+
+    await c.activeSite.refresh();
 
     const scanType = parsed.data.scanType;
     let cidrList: string[] = [];
@@ -189,7 +206,9 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     const q = request.query as Record<string, string | undefined>;
     const preferredInfrastructureIp =
       hostFromUrl(c.config.PFSENSE_URL ?? '') || c.config.ROUTER_SNMP_HOST || null;
+    const siteId = c.activeSite.getActiveSiteId();
     const devices = await c.listDevices.execute({
+      siteId: siteId ?? undefined,
       search: q.search,
       deviceType: q.type,
       onlineOnly: q.online === 'true',
@@ -238,6 +257,36 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     const device = await c.updateMeta.execute({ id, ...parsed.data });
     if (!device) return reply.status(404).send({ error: 'device not found' });
     return { device };
+  });
+
+  app.get('/api/speed-tests', async (request) => {
+    const parsed = SpeedTestListQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) return { samples: [] };
+    const since = parsed.data.since ? new Date(parsed.data.since) : undefined;
+    const samples = await c.listSpeedTests.execute({
+      limit: parsed.data.limit,
+      since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+    });
+    return { samples };
+  });
+
+  app.get('/api/speed-tests/report', async (request) => {
+    const parsed = SpeedTestReportQuerySchema.safeParse(request.query ?? {});
+    const q = parsed.success ? parsed.data : { days: 30, limit: 100 };
+    return c.buildSpeedTestReport.execute(q.days, q.limit);
+  });
+
+  app.post('/api/speed-tests/run', async (_request, reply) => {
+    if (c.runSpeedTest.isRunning()) {
+      return reply.status(409).send({ error: 'speed test already running' });
+    }
+    try {
+      const result = await c.runSpeedTest.execute('manual');
+      return { result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.status(503).send({ error: message });
+    }
   });
 
   app.get('/api/export', async (request, reply) => {

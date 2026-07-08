@@ -3,8 +3,13 @@ import type {
   HealthResponse,
   ScanSession,
   ScanType,
+  SpeedTestReport,
+  SpeedTestResult,
   TopologyResponse,
   UpdateDeviceRequest,
+  ActiveSiteResponse,
+  NetworkSite,
+  UpdateSiteRequest,
 } from '@netscanner/contracts';
 
 /** Agent API base — same-origin on :4000 bundle; :4000 when Next dev runs on :3000. */
@@ -123,6 +128,46 @@ export const api = {
     }).then((r) => json<AdminConfigPatchResponse>(r)),
 
   agentRestart,
+
+  speedTestReport: (days = 30) =>
+    apiFetch(`/api/speed-tests/report?days=${days}`).then((r) => json<SpeedTestReport>(r)),
+
+  runSpeedTest: () =>
+    apiFetch('/api/speed-tests/run', { method: 'POST' }).then(async (r) => {
+      if (!r.ok) {
+        const err = (await r.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(err?.error ?? `${r.status} ${r.statusText}`);
+      }
+      return json<{ result: SpeedTestResult }>(r);
+    }),
+
+  listSites: () => apiFetch('/api/sites').then((r) => json<{ sites: NetworkSite[] }>(r).then((b) => b.sites)),
+
+  activeSite: () => apiFetch('/api/sites/active').then((r) => json<ActiveSiteResponse>(r)),
+
+  refreshSite: () =>
+    apiFetch('/api/sites/refresh', { method: 'POST' }).then((r) => json<ActiveSiteResponse>(r)),
+
+  confirmSite: (siteId: string) =>
+    apiFetch('/api/sites/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ siteId }),
+    }).then((r) => json<ActiveSiteResponse>(r)),
+
+  lockSite: (siteId: string | null) =>
+    apiFetch('/api/sites/lock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ siteId }),
+    }).then((r) => json<ActiveSiteResponse>(r)),
+
+  updateSite: (id: string, patch: UpdateSiteRequest) =>
+    apiFetch(`/api/sites/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then((r) => json<{ site: NetworkSite }>(r).then((b) => b.site)),
 };
 
 export interface ConfigFieldSchema {
@@ -203,3 +248,5 @@ export interface AdminWirelessResponse {
   transmitting?: number;
   routers: AdminWirelessRouter[];
 }
+
+export type { SpeedTestReport, SpeedTestResult, ActiveSiteResponse, NetworkSite } from '@netscanner/contracts';

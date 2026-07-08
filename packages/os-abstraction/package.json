@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@netscanner/contracts": "workspace:*",
     "@netscanner/kernel": "workspace:*"
   }
 }

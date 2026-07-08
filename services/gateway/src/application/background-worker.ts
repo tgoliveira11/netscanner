@@ -32,6 +32,9 @@ export interface BackgroundWorkerDeps {
   trafficSource?: ITrafficSource;
   trafficMonitor?: TrafficMonitor;
   dnsActivityLog?: DnsActivityLog;
+  getSiteId: () => string;
+  needsSiteConfirmation?: () => boolean;
+  refreshSite?: () => Promise<void>;
 }
 
 /**
@@ -100,7 +103,8 @@ export class BackgroundWorker {
 
   private async onPassiveSignal(ip: string): Promise<void> {
     if (ip.startsWith('lldp:')) return;
-    const device = await this.deps.repo.findByIp(ip);
+    const siteId = this.deps.getSiteId();
+    const device = await this.deps.repo.findByIp(siteId, ip);
     if (!device) return;
     if (
       !this.deps.enrichment.needsPassiveEnrichment(device) &&
@@ -114,7 +118,7 @@ export class BackgroundWorker {
   }
 
   private async onDhcpCaptured(fp: DhcpFingerprint): Promise<void> {
-    const device = await this.deps.repo.findByMac(fp.mac);
+    const device = await this.deps.repo.findByMac(this.deps.getSiteId(), fp.mac);
     if (!device) return;
     await this.enrichOne(device.id, BACKGROUND_ENRICH_SCAN_ID);
   }
@@ -124,7 +128,7 @@ export class BackgroundWorker {
     this.enrichRunning = true;
     try {
       await this.refreshTraffic();
-      const devices = await this.deps.repo.list();
+      const devices = await this.deps.repo.list({ siteId: this.deps.getSiteId() });
       for (const device of devices) {
         if (
           !this.deps.enrichment.needsEnrichment(device) &&
@@ -153,7 +157,7 @@ export class BackgroundWorker {
 
     const maxAgeMs = config.BACKGROUND_PORT_RESCAN_MAX_AGE_MS;
     const batch = config.BACKGROUND_PORT_RESCAN_BATCH;
-    const devices = await repo.list();
+    const devices = await repo.list({ siteId: this.deps.getSiteId() });
     const stale = devices.filter((d) => enrichment.needsPortRescan(d, maxAgeMs)).slice(0, batch);
     if (!stale.length) return;
 
@@ -221,6 +225,9 @@ export class BackgroundWorker {
 
   private async runLightScan(): Promise<void> {
     if (this.scanRunning || this.deps.sessions.activeScan()) return;
+    if (this.deps.needsSiteConfirmation?.()) return;
+
+    await this.deps.refreshSite?.();
 
     const cidrs = listScanCidrs(this.deps.config.SCAN_CIDRS);
     if (!cidrs.length) return;

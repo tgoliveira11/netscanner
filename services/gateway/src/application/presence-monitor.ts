@@ -4,6 +4,8 @@ import type { Device, IEventPublisher } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
 import type { IDeviceRepository } from '@netscanner/inventory';
 import type { IRouterLeaseSource } from '@netscanner/discovery';
+import type { ITrafficSource, TrafficMonitor } from '@netscanner/scanner';
+import { trafficSuggestsAlive } from '@netscanner/scanner';
 import type { ScanSessionStore } from './scan-session.js';
 
 const LATENCY_RE = /time[=<]\s*([\d.]+)\s*ms/i;
@@ -16,6 +18,11 @@ export interface PresenceMonitorDeps {
   events: IEventPublisher;
   sessions: ScanSessionStore;
   leaseSource?: IRouterLeaseSource;
+  trafficMonitor?: TrafficMonitor;
+  trafficSource?: ITrafficSource;
+  getSiteId: () => string;
+  needsSiteConfirmation?: () => boolean;
+  refreshSite?: () => Promise<void>;
 }
 
 function pingArgs(host: string, timeoutMs: number): string[] {
@@ -75,10 +82,17 @@ export class PresenceMonitor {
     if (this.running || this.deps.sessions.activeScan()) return;
     this.running = true;
     try {
-      const devices = await this.deps.repo.list();
+      const devices = await this.deps.repo.list({ siteId: this.deps.getSiteId() });
       if (!devices.length) return;
 
       const leaseOnline = await this.leaseOnlineByIp();
+      if (this.deps.trafficSource && this.deps.trafficMonitor) {
+        try {
+          await this.deps.trafficMonitor.refresh(this.deps.trafficSource);
+        } catch {
+          /* traffic hint is optional */
+        }
+      }
       const timeoutMs = this.deps.config.PRESENCE_PING_TIMEOUT_MS;
       const concurrency = Math.min(this.deps.config.PRESENCE_PING_CONCURRENCY, devices.length);
       const offlineAfter = Math.max(1, this.deps.config.PRESENCE_OFFLINE_AFTER_MISSES);
@@ -132,6 +146,12 @@ export class PresenceMonitor {
       const ping = await pingHost(this.deps.runner, device.ip, timeoutMs);
       alive = ping.alive;
       latencyMs = ping.latencyMs;
+      if (!alive) {
+        const traffic =
+          this.deps.trafficMonitor?.get(device.ip) ??
+          (device.signals?.traffic as import('@netscanner/contracts').Traffic | undefined);
+        if (trafficSuggestsAlive(traffic)) alive = true;
+      }
     }
 
     if (alive) {

@@ -57,6 +57,7 @@ import {
   OmadaConnectionSource,
   PfRestTrafficSource,
   resolvePfSenseSshHost,
+  CloudflareSpeedTester,
   TrafficMonitor,
   type SnmpV3Config,
   type ITrafficSource,
@@ -82,9 +83,20 @@ import {
   SecretCipher,
   wrapWithSecretProtection,
   SecretProtectingDeviceRepository,
+  PrismaSpeedTestRepository,
+  InMemorySpeedTestRepository,
+  RecordSpeedTestUseCase,
+  ListSpeedTestsUseCase,
+  BuildSpeedTestReportUseCase,
   type IDeviceRepository,
   type IDhcpFingerprintStore,
+  type ISpeedTestRepository,
+  type ISiteRepository,
+  PrismaSiteRepository,
+  InMemorySiteRepository,
+  ensureDefaultSite,
 } from '@netscanner/inventory';
+import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IConnectionSource } from '@netscanner/contracts';
 import { InProcessEventBus } from './infrastructure/event-bus.js';
 import { ScanSessionStore } from './application/scan-session.js';
@@ -93,6 +105,9 @@ import { DeviceEnrichmentService } from './application/device-enrichment.service
 import { PresenceMonitor } from './application/presence-monitor.js';
 import { BuildTopologyUseCase } from './application/build-topology.use-case.js';
 import { BackgroundWorker } from './application/background-worker.js';
+import { SpeedTestWorker } from './application/speed-test-worker.js';
+import { RunSpeedTestUseCase } from './application/run-speed-test.use-case.js';
+import { ActiveSiteService } from './application/active-site.service.js';
 import { DnsActivityLog } from './application/dns-activity-log.js';
 import { createRuntimeSettings, type RuntimeSettingsService } from './application/runtime-settings.service.js';
 import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
@@ -119,6 +134,10 @@ export interface Container {
   passiveStore?: IPassiveSignalStore;
   passiveListeners?: PassiveListeners;
   backgroundWorker: BackgroundWorker;
+  speedTestWorker: SpeedTestWorker;
+  runSpeedTest: RunSpeedTestUseCase;
+  listSpeedTests: ListSpeedTestsUseCase;
+  buildSpeedTestReport: BuildSpeedTestReportUseCase;
   presenceMonitor: PresenceMonitor;
   snmp: SnmpEnricher;
   fingerbank?: FingerbankClient;
@@ -131,6 +150,8 @@ export interface Container {
   detectPrimaryCidr: () => string | null;
   listScanCidrs: () => string[];
   listInterfaces: typeof listLocalInterfaces;
+  activeSite: ActiveSiteService;
+  siteRepo: ISiteRepository;
 }
 
 /**
@@ -277,6 +298,54 @@ async function buildRepository(config: AppConfig, logger: Logger): Promise<IDevi
   return repo;
 }
 
+async function buildSiteRepository(config: AppConfig, logger: Logger): Promise<ISiteRepository> {
+  if (process.env.PERSISTENCE === 'memory') {
+    const repo = new InMemorySiteRepository();
+    await ensureDefaultSite(repo);
+    return repo;
+  }
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    const repo = new PrismaSiteRepository(prisma);
+    await ensureDefaultSite(repo);
+    logger.info('network site persistence enabled');
+    return repo;
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'site Prisma unavailable; using in-memory sites',
+    );
+    const repo = new InMemorySiteRepository();
+    await ensureDefaultSite(repo);
+    return repo;
+  }
+}
+
+async function buildSpeedTestRepository(config: AppConfig, logger: Logger): Promise<ISpeedTestRepository> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemorySpeedTestRepository();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    logger.info('using Prisma speed test persistence');
+    return new PrismaSpeedTestRepository(prisma);
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'speed test Prisma unavailable; using in-memory store',
+    );
+    return new InMemorySpeedTestRepository();
+  }
+}
+
 async function buildDhcpFingerprintStore(
   config: AppConfig,
   logger: Logger,
@@ -389,6 +458,31 @@ export async function buildContainer(): Promise<Container> {
   const classify = new ClassifyDeviceUseCase(engine, vendorLookup, new SecurityAnalyzer());
 
   const repo = await buildRepository(config, logger);
+  const siteRepo = await buildSiteRepository(config, logger);
+
+  const activeSite: ActiveSiteService = new ActiveSiteService(
+    siteRepo,
+    config,
+    logger,
+    async () => {
+      const cfg = activeSite.effectiveConfig();
+    if (!cfg.PFSENSE_URL?.trim() || !cfg.PFSENSE_API_KEY?.trim()) return null;
+    try {
+      const res = await fetch(`${cfg.PFSENSE_URL.replace(/\/$/, '')}/api/v2/system/version`, {
+        headers: { 'X-API-Key': cfg.PFSENSE_API_KEY },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!res.ok) return cfg.PFSENSE_URL;
+      const body = (await res.json()) as { data?: { hostid?: string; version?: string } };
+      return body.data?.hostid ?? body.data?.version ?? cfg.PFSENSE_URL;
+    } catch {
+      return cfg.PFSENSE_URL ?? null;
+    }
+  });
+  const getSiteId = (): string => activeSite.getActiveSiteId() ?? LEGACY_DEFAULT_SITE_ID;
+  await activeSite.initialize();
+
+  const speedTestRepo = await buildSpeedTestRepository(config, logger);
   const upsert = new UpsertDeviceUseCase(repo);
   const dhcpStore = await buildDhcpFingerprintStore(config, logger);
   const passiveStore = await buildPassiveSignalStore(config, logger);
@@ -455,9 +549,9 @@ export async function buildContainer(): Promise<Container> {
   }
   leaseSources.push(
     new DynamicRouterScrapeLeaseSource(async () => {
-      const creds = await repo.listRouterScrapeCredentials();
+      const creds = await repo.listRouterScrapeCredentials(getSiteId());
       return mergeRouterScrapeTargets(
-        config,
+        activeSite.effectiveConfig(),
         creds.map((c) => ({
           ip: c.ip,
           deviceType: c.deviceType,
@@ -576,6 +670,7 @@ export async function buildContainer(): Promise<Container> {
     snmp,
     connectionSource,
     trafficMonitor,
+    getSiteId,
   });
 
   let passiveListeners: PassiveListeners | undefined;
@@ -624,10 +719,11 @@ export async function buildContainer(): Promise<Container> {
     config,
     elevated: capabilities.elevated,
     dnsActivityLog,
+    getSiteId,
   });
 
   const backgroundWorker = new BackgroundWorker({
-    config,
+    config: activeSite.effectiveConfig(),
     logger,
     enrichment,
     repo,
@@ -643,23 +739,51 @@ export async function buildContainer(): Promise<Container> {
     trafficSource,
     trafficMonitor,
     dnsActivityLog,
+    getSiteId,
+    needsSiteConfirmation: () => activeSite.needsConfirmation(),
+    refreshSite: async () => {
+      await activeSite.refresh();
+    },
   });
 
   const presenceMonitor = new PresenceMonitor({
-    config,
+    config: activeSite.effectiveConfig(),
     logger,
     runner,
     repo,
     events,
     sessions,
     leaseSource,
+    trafficMonitor,
+    trafficSource,
+    getSiteId,
   });
 
   const listDevices = new ListDevicesUseCase(repo);
   const getDevice = new GetDeviceUseCase(repo);
   const updateMeta = new UpdateDeviceMetaUseCase(repo);
   const exportDevices = new ExportDevicesUseCase(repo);
-  const buildTopology = new BuildTopologyUseCase(repo, config, logger, connectionSource, listLocalInterfaces);
+  const buildTopology = new BuildTopologyUseCase(
+    repo,
+    () => activeSite.effectiveConfig(),
+    getSiteId,
+    logger,
+    connectionSource,
+    listLocalInterfaces,
+  );
+
+  const recordSpeedTest = new RecordSpeedTestUseCase(speedTestRepo);
+  const listSpeedTests = new ListSpeedTestsUseCase(speedTestRepo);
+  const buildSpeedTestReport = new BuildSpeedTestReportUseCase(speedTestRepo);
+  const speedTester = new CloudflareSpeedTester(logger);
+  const runSpeedTest = new RunSpeedTestUseCase({
+    config,
+    logger,
+    tester: speedTester,
+    record: recordSpeedTest,
+    sessions,
+  });
+  const speedTestWorker = new SpeedTestWorker({ config, logger, runSpeedTest });
 
   const container: Container = {
     config,
@@ -684,6 +808,10 @@ export async function buildContainer(): Promise<Container> {
     passiveStore,
     passiveListeners,
     backgroundWorker,
+    speedTestWorker,
+    runSpeedTest,
+    listSpeedTests,
+    buildSpeedTestReport,
     presenceMonitor,
     snmp,
     fingerbank,
@@ -694,8 +822,10 @@ export async function buildContainer(): Promise<Container> {
     runtimeSettings: null as unknown as RuntimeSettingsService,
     agentLogPath,
     detectPrimaryCidr,
-    listScanCidrs: () => listScanCidrs(config.SCAN_CIDRS),
+    listScanCidrs: () => listScanCidrs(activeSite.effectiveConfig().SCAN_CIDRS),
     listInterfaces: listLocalInterfaces,
+    activeSite,
+    siteRepo,
   };
   container.runtimeSettings = createRuntimeSettings(container, configPath);
   return container;

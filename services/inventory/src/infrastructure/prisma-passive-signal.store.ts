@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import {
   mergePassiveSignals,
   type IPassiveSignalStore,
@@ -11,7 +12,10 @@ export class PrismaPassiveSignalStore implements IPassiveSignalStore {
   private readonly byMac = new Map<string, Record<string, unknown>>();
   private readonly handlers = new Set<(ip: string) => void>();
 
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly siteId: string = LEGACY_DEFAULT_SITE_ID,
+  ) {}
 
   async hydrate(): Promise<void> {
     const rows = await this.prisma.passiveSignalRecord.findMany();
@@ -36,8 +40,9 @@ export class PrismaPassiveSignalStore implements IPassiveSignalStore {
     this.mem.set(obs.ip, { mac, hostname, signals: nextSignals });
     if (mac) this.byMac.set(mac.toLowerCase(), mergePassiveSignals(this.byMac.get(mac.toLowerCase()) ?? {}, nextSignals));
     await this.prisma.passiveSignalRecord.upsert({
-      where: { ip: obs.ip },
+      where: { siteId_ip: { siteId: this.siteId, ip: obs.ip } },
       create: {
+        siteId: this.siteId,
         ip: obs.ip,
         mac,
         hostname,

@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@netscanner/contracts": "workspace:*",
     "zod": "^3.24.1"
   }
 }

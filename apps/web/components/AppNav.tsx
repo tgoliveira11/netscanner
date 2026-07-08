@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { SiteSwitcher } from './SiteSwitcher';
 
 const links = [
   { href: '/', label: 'Dashboard' },
@@ -15,7 +16,8 @@ export function AppNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex flex-wrap items-center gap-1">
+    <div className="flex flex-col gap-3">
+      <nav className="flex flex-wrap items-center gap-1">
       {links.map((link) => {
         const active =
           link.href === '/'
@@ -31,6 +33,8 @@ export function AppNav() {
           </Link>
         );
       })}
-    </nav>
+      </nav>
+      <SiteSwitcher />
+    </div>
   );
 }

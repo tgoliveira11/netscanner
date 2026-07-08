@@ -7,6 +7,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Network sites** — isolated inventory per location (home, hotel, office); fingerprint match (gateway MAC/IP, CIDR, router id, SSIDs, geo); auto-create unknown sites; manual lock + rename in UI; VPN-aware matching; per-site integration overrides.
+- **WAN speed test** — background download/upload sampling via Cloudflare (`SPEED_TEST_*`); results stored in SQLite; `GET /api/speed-tests/report`, manual `POST /api/speed-tests/run`; Admin **Internet speed** panel with 30-day report.
 - **pfSense identity classification** — MAC/IP matching `pfsenseInterfaces` → `firewall`; WAN next-hop / WAN* CPE → `router` (ISP modem).
 - **Topology WAN tier** — `wan` node role above the pfSense gateway in `/api/topology` and TopologyView.
 - **Copy MAC address** — clipboard icon button next to the MAC field in the device drawer; shows a checkmark for 1.5 s after copying; hidden when MAC is unavailable.

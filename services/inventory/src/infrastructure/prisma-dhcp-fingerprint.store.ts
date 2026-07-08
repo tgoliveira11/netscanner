@@ -1,14 +1,20 @@
 import type { PrismaClient } from '@prisma/client';
+import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IDhcpFingerprintStore, StoredDhcpFingerprint } from '../domain/dhcp-fingerprint-store.js';
 
 export class PrismaDhcpFingerprintStore implements IDhcpFingerprintStore {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly siteId: string = LEGACY_DEFAULT_SITE_ID,
+  ) {}
 
   async save(fp: StoredDhcpFingerprint): Promise<void> {
+    const mac = fp.mac.toLowerCase();
     await this.prisma.dhcpFingerprintRecord.upsert({
-      where: { mac: fp.mac.toLowerCase() },
+      where: { siteId_mac: { siteId: this.siteId, mac } },
       create: {
-        mac: fp.mac.toLowerCase(),
+        siteId: this.siteId,
+        mac,
         fingerprint: fp.fingerprint,
         vendorClass: fp.vendorClass,
         hostname: fp.hostname,

@@ -39,6 +39,7 @@ export interface DeviceEnrichmentDeps {
   trafficMonitor?: TrafficMonitor;
   /** Known-vulnerability resolver (#2). Defaults to the offline curated set. */
   cveResolver?: ICveResolver;
+  getSiteId: () => string;
 }
 
 export interface EnrichHostInput {
@@ -212,7 +213,7 @@ export class DeviceEnrichmentService {
       signals: device.signals,
       gatewayIp,
     });
-    return this.deps.upsert.execute(snapshot);
+    return this.deps.upsert.execute(this.deps.getSiteId(), snapshot);
   }
 
   async enrichFromFingerprint(
@@ -238,7 +239,7 @@ export class DeviceEnrichmentService {
       gatewayIp,
       vendorFromScan: fp.vendorFromScan ?? null,
     });
-    return this.deps.upsert.execute(snapshot);
+    return this.deps.upsert.execute(this.deps.getSiteId(), snapshot);
   }
 
   needsPortRescan(device: Device, maxAgeMs: number): boolean {

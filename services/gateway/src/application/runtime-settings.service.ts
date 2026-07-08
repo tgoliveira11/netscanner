@@ -47,6 +47,7 @@ export function createRuntimeSettings(c: Container, configPath: string): Runtime
       }
       c.backgroundWorker.reconfigure();
       c.presenceMonitor.reconfigure();
+      c.speedTestWorker.reconfigure();
 
       return { restartRequired, applied };
     },

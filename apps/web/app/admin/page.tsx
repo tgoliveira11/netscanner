@@ -3,7 +3,114 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AppNav } from '../../components/AppNav';
-import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type AdminWirelessResponse, type ConfigFieldSchema } from '../../lib/api';
+import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type AdminWirelessResponse, type ConfigFieldSchema, type SpeedTestReport } from '../../lib/api';
+
+function fmtMbps(v: number | null | undefined): string {
+  if (v == null) return '—';
+  return `${v.toFixed(1)} Mbps`;
+}
+
+function SpeedTestPanel() {
+  const [report, setReport] = useState<SpeedTestReport | null>(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setReport(await api.speedTestReport(30));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const runNow = async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      await api.runSpeedTest();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="w-full space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => void runNow()}
+          disabled={running}
+          className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+        >
+          {running ? 'Testing…' : 'Run test now'}
+        </button>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="rounded-lg border border-edge px-3 py-1.5 text-xs text-muted hover:text-slate-200"
+        >
+          Refresh report
+        </button>
+      </div>
+      {error && <p className="text-xs text-bad">{error}</p>}
+      {report && (
+        <>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <StatusCard label="Latest download" value={fmtMbps(report.latest?.downloadMbps)} />
+            <StatusCard label="Latest upload" value={fmtMbps(report.latest?.uploadMbps)} />
+            <StatusCard
+              label="30d avg download"
+              value={fmtMbps(report.avgDownloadMbps)}
+            />
+            <StatusCard label="Samples (30d)" value={String(report.count)} />
+          </div>
+          {report.samples.length > 0 && (
+            <div className="overflow-auto rounded-lg border border-edge">
+              <table className="w-full min-w-[32rem] text-left text-xs">
+                <thead className="border-b border-edge bg-panelup text-muted">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">When</th>
+                    <th className="px-3 py-2 font-medium">↓ Mbps</th>
+                    <th className="px-3 py-2 font-medium">↑ Mbps</th>
+                    <th className="px-3 py-2 font-medium">Latency</th>
+                    <th className="px-3 py-2 font-medium">Trigger</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...report.samples].reverse().slice(-20).reverse().map((s) => (
+                    <tr key={s.id} className="border-b border-edge/50">
+                      <td className="px-3 py-1.5 text-slate-300">
+                        {new Date(s.measuredAt).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-1.5">{fmtMbps(s.downloadMbps)}</td>
+                      <td className="px-3 py-1.5">{fmtMbps(s.uploadMbps)}</td>
+                      <td className="px-3 py-1.5">{s.latencyMs != null ? `${Math.round(s.latencyMs)} ms` : '—'}</td>
+                      <td className="px-3 py-1.5 text-muted">{s.trigger}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {report.latest?.measuredAt && (
+            <p className="text-[10px] text-muted">
+              Last sample: {new Date(report.latest.measuredAt).toLocaleString()} · adjust interval via
+              SPEED_TEST_INTERVAL_MS in Background settings
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function LogViewer({ lines }: { lines: AdminLogLine[] }) {
   return (
@@ -309,6 +416,13 @@ export default function AdminPage() {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-200">Internet speed (WAN)</h2>
+          <SpeedTestPanel />
+        </div>
       </section>
 
       <section className="space-y-3">

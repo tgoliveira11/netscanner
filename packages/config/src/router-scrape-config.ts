@@ -62,9 +62,7 @@ export function resolveRouterScrapeTargets(config: AppConfig): RouterScrapeTarge
   return [...byUrl.values()];
 }
 
-function defaultScrapeKind(device: DeviceRouterScrapeInput): 'openwrt' | 'compal' {
-  const brand = device.brand?.toLowerCase() ?? '';
-  if (brand.includes('compal')) return 'compal';
+function defaultScrapeKind(_device: DeviceRouterScrapeInput): 'openwrt' | 'compal' {
   return 'openwrt';
 }
 

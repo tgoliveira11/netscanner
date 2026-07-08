@@ -4,3 +4,5 @@ export { loadConfig, resetConfigCache, patchLiveConfig } from './config-loader.j
 export * from './runtime-config.js';
 export * from './snmp-config.js';
 export * from './router-scrape-config.js';
+export * from './topology-config.js';
+export * from './site-config-merge.js';
