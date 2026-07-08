@@ -82,14 +82,21 @@ export class UpsertDeviceUseCase {
     const keepClass =
       stored.deviceType !== 'unknown' &&
       stored.classificationConfidence >= fields.classificationConfidence;
+    // Never erase a known MAC with null — ARP/ping-only passes often lack L2,
+    // and wiping MAC breaks SNMP/Fingerbank/DHCP lookups keyed by address.
+    const mac = fields.mac ?? stored.mac;
     const next: StoredDevice = {
       ...stored,
       ...fields,
+      mac,
       os: mergeOs(fields.os, stored.os),
       hostname: fields.hostname ?? stored.hostname,
       vendor: fields.vendor ?? stored.vendor,
       brand: fields.brand ?? stored.brand,
       model: fields.model ?? stored.model,
+      // Prefer an authoritative connection from either side; don't let unknown wipe wifi/wired.
+      connectionType:
+        fields.connectionType !== 'unknown' ? fields.connectionType : stored.connectionType,
       deviceType: keepClass ? stored.deviceType : fields.deviceType,
       classificationConfidence: keepClass
         ? stored.classificationConfidence

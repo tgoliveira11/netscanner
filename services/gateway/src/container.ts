@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OuiLookup, loadOuiTable } from '@netscanner/kernel';
-import { loadConfig, loadEnvFile, resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, mergeRouterScrapeTargets, type AppConfig } from '@netscanner/config';
+import { loadConfig, loadEnvFile, resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, mergeRouterScrapeTargets, resolveRouterScrapeTargets, type AppConfig } from '@netscanner/config';
 import { createLogger, type Logger } from '@netscanner/logger';
 import {
   NodeCommandRunner,
@@ -10,6 +10,7 @@ import {
   detectPrimaryCidr,
   listLocalInterfaces,
   listScanCidrs,
+  listSniffInterfaces,
   type ScanCapabilities,
 } from '@netscanner/os-abstraction';
 import {
@@ -26,6 +27,8 @@ import {
   SnmpArpLeaseSource,
   CompositeLeaseSource,
   DhcpSniffer,
+  RemoteDhcpSniffer,
+  CompositeDhcpFingerprintSource,
   FingerbankClient,
   PassiveListeners,
   InMemoryPassiveSignalStore,
@@ -99,6 +102,8 @@ export interface Container {
   repo: IDeviceRepository;
   leaseSource?: IRouterLeaseSource;
   dhcpSource?: IDhcpFingerprintSource;
+  /** Effective local + remote DHCP sniff interfaces (for status APIs). */
+  dhcpSniffIfaces: () => string[];
   dhcpStore?: IDhcpFingerprintStore;
   passiveStore?: IPassiveSignalStore;
   passiveListeners?: PassiveListeners;
@@ -128,6 +133,55 @@ function resolveSqliteUrl(url: string): string {
     dir = path.dirname(dir);
   }
   return `file:${path.resolve(dir, 'services/inventory/prisma', rel)}`;
+}
+
+/** Local tcpdump iface list: env override or sniffable interfaces (prefer `any` when multi). */
+export function resolveLocalDhcpSniffIfaces(
+  cfg: AppConfig,
+  fallbackIface = 'en0',
+): string[] {
+  const override = cfg.DHCP_SNIFF_IFACES?.trim();
+  if (override) {
+    return [...new Set(override.split(',').map((s) => s.trim()).filter(Boolean))];
+  }
+  const names = listSniffInterfaces().map((i) => i.name);
+  if (names.length === 0) return [fallbackIface];
+  if (names.length === 1) return names;
+  return ['any'];
+}
+
+/** SSH creds for remote DHCP sniff on SNMP_SWITCH_HOST (password never logged). */
+export function resolveRemoteDhcpSshCreds(
+  cfg: AppConfig,
+): { host: string; username: string; password?: string } | null {
+  const host = cfg.SNMP_SWITCH_HOST?.trim();
+  if (!host) return null;
+
+  const passwordOverride = cfg.DHCP_SNIFF_SSH_PASSWORD?.trim();
+  if (passwordOverride) {
+    return { host, username: 'root', password: passwordOverride };
+  }
+
+  const scrapeTargets = resolveRouterScrapeTargets(cfg);
+  const match = scrapeTargets.find((t) => {
+    try {
+      const u = new URL(t.baseUrl.includes('://') ? t.baseUrl : `http://${t.baseUrl}`);
+      return u.hostname === host;
+    } catch {
+      return t.baseUrl.includes(host);
+    }
+  });
+  return {
+    host,
+    username: match?.username?.trim() || 'root',
+    password: match?.password,
+  };
+}
+
+function sniffIfacesFromSource(source: IDhcpFingerprintSource | undefined): string[] {
+  if (!source) return [];
+  const reporter = source as IDhcpFingerprintSource & { sniffIfaces?: () => string[] };
+  return typeof reporter.sniffIfaces === 'function' ? reporter.sniffIfaces() : [];
 }
 
 /** Attempt Prisma persistence; fall back to in-memory if the client isn't ready. */
@@ -379,19 +433,53 @@ export async function buildContainer(): Promise<Container> {
   let dhcpSource: IDhcpFingerprintSource | undefined;
   const ifaces = listLocalInterfaces();
   const primaryIface = ifaces.find((i) => i.cidr === detectPrimaryCidr()) ?? ifaces[0];
+  const sniffIfaces = resolveLocalDhcpSniffIfaces(config, primaryIface?.name ?? 'en0');
   if (config.DHCP_SNIFF && capabilities.elevated) {
-    dhcpSource = new DhcpSniffer(logger, {
-      iface: primaryIface?.name ?? 'en0',
-      persist: async (fp) =>
-        dhcpStore.save({
-          mac: fp.mac,
-          fingerprint: fp.fingerprint,
-          vendorClass: fp.vendorClass,
-          hostname: fp.hostname,
-          capturedAt: new Date().toISOString(),
-        }),
-      hydrate: () => dhcpStore.loadAll(),
+    const persist = async (fp: {
+      mac: string;
+      fingerprint: string;
+      vendorClass: string | null;
+      hostname: string | null;
+    }) =>
+      dhcpStore.save({
+        mac: fp.mac,
+        fingerprint: fp.fingerprint,
+        vendorClass: fp.vendorClass,
+        hostname: fp.hostname,
+        capturedAt: new Date().toISOString(),
+      });
+    const hydrate = () => dhcpStore.loadAll();
+
+    const local = new DhcpSniffer(logger, {
+      ifaces: sniffIfaces,
+      persist,
+      hydrate,
     });
+    logger.info(
+      { ifaces: sniffIfaces },
+      'DHCP local sniff configured (udp :67 preferred; tcpdump fallback on these ifaces — routed VLANs without L2 here need remote switch capture)',
+    );
+
+    const remoteCreds = resolveRemoteDhcpSshCreds(config);
+    const sources: IDhcpFingerprintSource[] = [local];
+    if (remoteCreds) {
+      sources.push(
+        new RemoteDhcpSniffer(logger, {
+          host: remoteCreds.host,
+          username: remoteCreds.username,
+          password: remoteCreds.password,
+          persist,
+          // hydrate only once via local (shared sqlite); remote uses empty start cache
+        }),
+      );
+      logger.info(
+        { host: remoteCreds.host, iface: 'br-lan' },
+        'DHCP remote sniff configured on OpenWrt switch bridge (other VLANs)',
+      );
+    }
+
+    dhcpSource =
+      sources.length === 1 ? local : new CompositeDhcpFingerprintSource(sources);
   }
 
   const enrichment = new DeviceEnrichmentService({
@@ -480,6 +568,10 @@ export async function buildContainer(): Promise<Container> {
     repo,
     leaseSource,
     dhcpSource,
+    dhcpSniffIfaces: () => {
+      const live = sniffIfacesFromSource(dhcpSource);
+      return live.length ? live : sniffIfaces;
+    },
     dhcpStore,
     passiveStore,
     passiveListeners,

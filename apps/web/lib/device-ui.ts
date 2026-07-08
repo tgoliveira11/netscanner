@@ -37,6 +37,8 @@ export function connectionGlyph(type: string): string {
 /** Topology node icon — wired routers omit the WiFi symbol. */
 export function topologyNodeIcon(role: string): string {
   switch (role) {
+    case 'wan':
+      return '🛰️';
     case 'gateway':
       return '🌐';
     case 'wired-router':

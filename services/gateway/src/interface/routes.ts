@@ -114,6 +114,7 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
       dhcpSniffer: Boolean(c.dhcpSource),
       dhcpListening: c.dhcpSource?.isListening() ?? false,
       dhcpMode: c.dhcpSource?.mode() ?? null,
+      dhcpSniffIfaces: c.dhcpSniffIfaces(),
       dhcpInMemory: c.dhcpSource?.size() ?? 0,
       dhcpPersisted: persistedDhcp,
       passiveSignals: persistedPassive,
@@ -135,15 +136,34 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     const parsed = StartScanRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-    const cidrRaw = parsed.data.cidr ?? c.detectPrimaryCidr();
-    if (!cidrRaw) return reply.status(400).send({ error: 'Could not determine a subnet to scan.' });
+    if (c.sessions.activeScan()) {
+      return reply.status(409).send({ error: 'A scan is already running.' });
+    }
 
-    const cidr = RunScanUseCase.parseCidr(cidrRaw);
-    if (!cidr) return reply.status(400).send({ error: `Invalid CIDR: ${cidrRaw}` });
+    const scanType = parsed.data.scanType;
+    let cidrList: string[] = [];
 
-    const session = c.sessions.create(cidr.toString(), parsed.data.scanType);
-    // Fire-and-forget: progress is streamed over WebSocket.
-    void c.runScan.execute(session.id, cidr, parsed.data.scanType);
+    if (parsed.data.allCidrs) {
+      cidrList = c.listScanCidrs();
+      if (!cidrList.length) {
+        return reply.status(400).send({ error: 'No configured CIDRs to scan. Set Extra scan CIDRs or connect to a LAN.' });
+      }
+    } else {
+      const cidrRaw = parsed.data.cidr ?? c.detectPrimaryCidr();
+      if (!cidrRaw) return reply.status(400).send({ error: 'Could not determine a subnet to scan.' });
+      cidrList = [cidrRaw];
+    }
+
+    const cidrs = [];
+    for (const raw of cidrList) {
+      const cidr = RunScanUseCase.parseCidr(raw);
+      if (!cidr) return reply.status(400).send({ error: `Invalid CIDR: ${raw}` });
+      cidrs.push(cidr);
+    }
+
+    const label = cidrs.map((entry) => entry.toString()).join(',');
+    const session = c.sessions.create(label, scanType);
+    void c.runScan.executeMany(session.id, cidrs, scanType);
     return reply.status(202).send({ scan: session });
   });
 

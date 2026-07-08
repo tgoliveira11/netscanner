@@ -40,6 +40,7 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
         dhcpSniffer: Boolean(c.dhcpSource),
         dhcpListening: c.dhcpSource?.isListening() ?? false,
         dhcpMode: c.dhcpSource?.mode?.() ?? null,
+        dhcpSniffIfaces: c.dhcpSniffIfaces(),
         dhcpInMemory: c.dhcpSource?.size() ?? 0,
         dhcpPersisted: persistedDhcp,
         passiveSignals: persistedPassive,

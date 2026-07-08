@@ -79,4 +79,34 @@ describe('UpsertDeviceUseCase', () => {
     const offline = await repo.markOfflineExcept([a.device.id]);
     expect(offline).toHaveLength(1);
   });
+
+  it('does not erase a known MAC when a later snapshot omits it', async () => {
+    const repo = new InMemoryDeviceRepository();
+    const upsert = new UpsertDeviceUseCase(repo);
+    await upsert.execute(snapshot({ mac: '9c:eb:e8:19:10:c2', ip: '192.168.52.105', hostname: 'br0813' }));
+    const second = await upsert.execute(
+      snapshot({
+        mac: null,
+        ip: '192.168.52.105',
+        hostname: 'br0813',
+        deviceType: 'unknown',
+        confidence: 0.1,
+        services: [],
+      }),
+    );
+    expect(second.isNew).toBe(false);
+    expect(second.device.mac).toBe('9c:eb:e8:19:10:c2');
+  });
+
+  it('restores MAC onto an IP-only record when a later snapshot finally has one', async () => {
+    const repo = new InMemoryDeviceRepository();
+    const upsert = new UpsertDeviceUseCase(repo);
+    const first = await upsert.execute(snapshot({ mac: null, ip: '192.168.52.105', hostname: 'br0813' }));
+    expect(first.device.mac).toBeNull();
+    const second = await upsert.execute(
+      snapshot({ mac: '9c:eb:e8:19:10:c2', ip: '192.168.52.105', hostname: 'br0813' }),
+    );
+    expect(second.device.id).toBe(first.device.id);
+    expect(second.device.mac).toBe('9c:eb:e8:19:10:c2');
+  });
 });
