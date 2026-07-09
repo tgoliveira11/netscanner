@@ -79,6 +79,7 @@ export class PrismaDeviceRepository implements IDeviceRepository {
         ip: true,
         deviceType: true,
         brand: true,
+        hostname: true,
         routerScrapeUser: true,
         routerScrapePassword: true,
       },
@@ -89,6 +90,7 @@ export class PrismaDeviceRepository implements IDeviceRepository {
         ip: r.ip,
         deviceType: r.deviceType,
         brand: r.brand,
+        hostname: r.hostname,
         routerScrapeUser: r.routerScrapeUser!,
         routerScrapePassword: r.routerScrapePassword!,
       }));

@@ -5,6 +5,7 @@ export interface RouterScrapeCredential {
   ip: string;
   deviceType: string;
   brand: string | null;
+  hostname: string | null;
   routerScrapeUser: string;
   routerScrapePassword: string;
 }

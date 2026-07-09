@@ -10,6 +10,19 @@ import type {
   ActiveSiteResponse,
   NetworkSite,
   UpdateSiteRequest,
+  PingResponse,
+  TracerouteResponse,
+  DnsLookupResponse,
+  PortScanResponse,
+  WifiScanResponse,
+  CameraScanResponse,
+  ControlStatus,
+  ControlBootstrap,
+  ControlVerifyResult,
+  PolicyAuditEntry,
+  DhcpReservationRequest,
+  BandwidthLimitRequest,
+  ParentalScheduleRequest,
 } from '@netscanner/contracts';
 
 /** Agent API base — same-origin on :4000 bundle; :4000 when Next dev runs on :3000. */
@@ -27,7 +40,10 @@ function apiUrl(path: string): string {
 }
 
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -168,13 +184,120 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
     }).then((r) => json<{ site: NetworkSite }>(r).then((b) => b.site)),
+
+  diagnosticsPing: (ip: string, count = 3) =>
+    apiFetch('/api/diagnostics/ping', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ip, count }),
+    }).then((r) => json<PingResponse>(r)),
+
+  diagnosticsTraceroute: (ip: string, maxHops = 20) =>
+    apiFetch('/api/diagnostics/traceroute', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ip, maxHops }),
+    }).then((r) => json<TracerouteResponse>(r)),
+
+  diagnosticsDns: (name: string, type: 'A' | 'AAAA' | 'PTR' | 'CNAME' | 'MX' = 'A', server?: string) =>
+    apiFetch('/api/diagnostics/dns', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, type, server }),
+    }).then((r) => json<DnsLookupResponse>(r)),
+
+  diagnosticsPortScan: (ip: string, depth: 'quick' | 'standard' = 'quick') =>
+    apiFetch('/api/diagnostics/port-scan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ip, depth }),
+    }).then((r) => json<PortScanResponse>(r)),
+
+  diagnosticsWifi: () => apiFetch('/api/diagnostics/wifi').then((r) => json<WifiScanResponse>(r)),
+
+  diagnosticsCameraScan: (cidr?: string) =>
+    apiFetch('/api/diagnostics/camera-scan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(cidr ? { cidr } : {}),
+    }).then((r) => json<CameraScanResponse>(r)),
+
+  controlBootstrap: () => apiFetch('/api/control/bootstrap').then((r) => json<ControlBootstrap>(r)),
+
+  controlVerify: () => apiFetch('/api/control/verify').then((r) => json<ControlVerifyResult>(r)),
+
+  controlBootstrapApply: () =>
+    apiFetch('/api/control/bootstrap', { method: 'POST' }).then((r) => json<ControlBootstrap>(r)),
+
+  controlStatus: (deviceId: string) =>
+    apiFetch(`/api/control/status/${encodeURIComponent(deviceId)}`).then((r) => json<ControlStatus>(r)),
+
+  controlBlock: (body: { deviceId?: string; ip?: string; mac?: string; reason?: string }) =>
+    apiFetch('/api/control/block', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlUnblock: (body: { deviceId?: string; ip?: string; mac?: string }) =>
+    apiFetch('/api/control/unblock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlPause: (body: { deviceId?: string; ip?: string; mac?: string; durationMs?: number }) =>
+    apiFetch('/api/control/pause', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlDhcpReserve: (body: DhcpReservationRequest) =>
+    apiFetch('/api/control/dhcp/reserve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlBandwidth: (body: BandwidthLimitRequest) =>
+    apiFetch('/api/control/bandwidth', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlAudit: (limit = 50) =>
+    apiFetch(`/api/control/audit?limit=${limit}`).then((r) => json<{ entries: PolicyAuditEntry[] }>(r)),
+
+  controlParentalList: () =>
+    apiFetch('/api/control/parental').then((r) => json<{ schedules: ParentalScheduleRow[] }>(r)),
+
+  controlParentalCreate: (body: ParentalScheduleRequest) =>
+    apiFetch('/api/control/parental', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ schedule: ParentalScheduleRow }>(r)),
 };
+
+export interface ParentalScheduleRow {
+  id: string;
+  name: string;
+  deviceIds: string[];
+  weekdays: number[];
+  startTime: string;
+  endTime: string;
+  enabled: boolean;
+  pfsenseScheduleId: string | null;
+}
 
 export interface ConfigFieldSchema {
   key: string;
   label: string;
   description: string;
-  type: 'string' | 'number' | 'boolean' | 'secret';
+  help?: string;
+  type: 'string' | 'number' | 'boolean' | 'secret' | 'multiline';
   group: string;
   restartRequired: boolean;
 }

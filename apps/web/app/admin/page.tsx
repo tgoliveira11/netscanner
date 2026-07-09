@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AppNav } from '../../components/AppNav';
+import { NetworkControlPanel } from '../../components/NetworkControlPanel';
 import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type AdminWirelessResponse, type ConfigFieldSchema, type SpeedTestReport } from '../../lib/api';
 
 function fmtMbps(v: number | null | undefined): string {
@@ -146,6 +147,50 @@ function StatusCard({ label, value }: { label: string; value: React.ReactNode })
   );
 }
 
+function CollapsibleSection({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="group" open={defaultOpen}>
+      <summary className="mb-2 cursor-pointer list-none text-sm font-semibold text-slate-200 marker:content-none [&::-webkit-details-marker]:hidden">
+        <span className="inline-flex items-center gap-2">
+          <span className="text-muted transition group-open:rotate-90">▸</span>
+          {title}
+        </span>
+      </summary>
+      {children}
+    </details>
+  );
+}
+
+function FieldHelp({ text }: { text: string }) {
+  return (
+    <span
+      className="pointer-events-none invisible absolute bottom-full left-0 z-50 mb-2 w-72 rounded-lg border border-edge bg-panelup p-2.5 text-xs leading-relaxed text-slate-300 opacity-0 shadow-xl transition group-hover:visible group-hover:opacity-100"
+      role="tooltip"
+    >
+      {text}
+    </span>
+  );
+}
+
+function ConfigFieldLabel({ field }: { field: ConfigFieldSchema }) {
+  const help = field.help ?? field.description;
+  return (
+    <span className="group relative inline-flex cursor-help items-center gap-1">
+      <span className="block text-sm font-medium text-slate-200">{field.label}</span>
+      <span className="text-[10px] text-muted opacity-60">?</span>
+      <FieldHelp text={help} />
+      {field.restartRequired && <span className="text-[10px] font-normal text-warn">· restart</span>}
+    </span>
+  );
+}
 function ConfigField({
   field,
   value,
@@ -160,7 +205,7 @@ function ConfigField({
   const id = `cfg-${field.key}`;
   if (field.type === 'boolean') {
     return (
-      <label htmlFor={id} className="flex cursor-pointer items-start gap-3 rounded-lg border border-edge bg-panelup p-3">
+      <label htmlFor={id} className="group relative flex cursor-pointer items-start gap-3 rounded-lg border border-edge bg-panelup p-3">
         <input
           id={id}
           type="checkbox"
@@ -168,22 +213,37 @@ function ConfigField({
           onChange={(e) => onChange(field.key, e.target.checked)}
           className="mt-1"
         />
-        <span>
-          <span className="block text-sm font-medium text-slate-200">{field.label}</span>
-          <span className="text-xs text-muted">{field.description}</span>
-          {field.restartRequired && <span className="ml-1 text-[10px] text-warn">· restart</span>}
+        <span className="min-w-0 flex-1">
+          <ConfigFieldLabel field={field} />
         </span>
       </label>
     );
   }
 
+  if (field.type === 'multiline') {
+    return (
+      <div className="group relative rounded-lg border border-edge bg-panelup p-3 md:col-span-2">
+        <label htmlFor={id} className="mb-2 block">
+          <ConfigFieldLabel field={field} />
+        </label>
+        <textarea
+          id={id}
+          rows={5}
+          value={draft}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          spellCheck={false}
+          placeholder={'http://192.168.40.2|openwrt|root|password\nhttp://192.168.51.101|compal|CLARO_21A469|password'}
+          className="w-full rounded-lg border border-edge bg-base px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent"
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-lg border border-edge bg-panelup p-3">
-      <label htmlFor={id} className="block text-sm font-medium text-slate-200">
-        {field.label}
-        {field.restartRequired && <span className="ml-1 text-[10px] font-normal text-warn">· restart</span>}
+    <div className="group relative rounded-lg border border-edge bg-panelup p-3">
+      <label htmlFor={id} className="mb-2 block">
+        <ConfigFieldLabel field={field} />
       </label>
-      <p className="mb-2 text-xs text-muted">{field.description}</p>
       <input
         id={id}
         type={field.type === 'secret' ? 'password' : field.type === 'number' ? 'number' : 'text'}
@@ -224,7 +284,7 @@ export default function AdminPage() {
       ]);
       setObs(o);
       setConfig(c);
-      setLogs([...l.memory, ...l.file].slice(-300));
+      setLogs([...l.memory, ...l.file].slice(-300).reverse());
       setError(null);
       if (!opts?.skipWireless) void refreshWireless();
     } catch (e) {
@@ -254,6 +314,29 @@ export default function AdminPage() {
     }
     return m;
   }, [config]);
+
+  const groupOrder = [
+    'Network Control',
+    'Network Sites',
+    'Integrations',
+    'Topology',
+    'Discovery',
+    'Scanning',
+    'Background',
+    'Gateway',
+    'Persistence',
+    'Agent',
+  ];
+
+  const sortedGroups = useMemo(() => {
+    const entries = [...grouped.entries()];
+    entries.sort(([a], [b]) => {
+      const ai = groupOrder.indexOf(a);
+      const bi = groupOrder.indexOf(b);
+      return (ai >= 0 ? ai : 99) - (bi >= 0 ? bi : 99) || a.localeCompare(b);
+    });
+    return entries;
+  }, [grouped]);
 
   const onFieldChange = (key: string, v: string | number | boolean) => {
     setDraft((d) => ({ ...d, [key]: String(v) }));
@@ -318,6 +401,7 @@ export default function AdminPage() {
               <span className="text-base font-normal text-muted">Admin</span>
             </h1>
             <p className="text-xs text-muted">Observability and runtime configuration (localhost only, no auth yet).</p>
+            <p className="text-[10px] text-muted">Full reference: <code className="text-slate-400">docs/admin.md</code> in the repository.</p>
           </div>
           <AppNav />
         </div>
@@ -418,6 +502,8 @@ export default function AdminPage() {
         )}
       </section>
 
+      <NetworkControlPanel />
+
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-slate-200">Internet speed (WAN)</h2>
@@ -425,8 +511,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-200">Recent discoveries</h2>
+      <CollapsibleSection title="Recent discoveries">
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="card p-4">
             <h3 className="mb-2 text-xs font-semibold uppercase text-muted">DHCP fingerprints</h3>
@@ -465,7 +550,7 @@ export default function AdminPage() {
             )}
           </div>
         </div>
-      </section>
+      </CollapsibleSection>
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-slate-200">Logs</h2>
@@ -480,7 +565,7 @@ export default function AdminPage() {
           </button>
         </div>
         {config &&
-          [...grouped.entries()].map(([group, fields]) => (
+          sortedGroups.map(([group, fields]) => (
             <div key={group} className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">{group}</h3>
               <div className="grid gap-3 md:grid-cols-2">

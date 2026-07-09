@@ -14,6 +14,8 @@ import { RunScanUseCase } from '../application/run-scan.use-case.js';
 import { authorizeAgentControl } from './agent-control.js';
 import { registerAdminRoutes } from './admin-routes.js';
 import { registerSiteRoutes } from './site-routes.js';
+import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
+import { registerControlRoutes } from './control-routes.js';
 
 const VERSION = '0.1.0';
 
@@ -33,6 +35,8 @@ function hostFromUrl(baseUrl: string): string {
 export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Container): void {
   registerAdminRoutes(app, c);
   registerSiteRoutes(app, c);
+  registerDiagnosticsRoutes(app, c);
+  registerControlRoutes(app, c);
   app.get('/api/health', async (_request, reply): Promise<HealthResponse> => {
     reply.header('access-control-allow-origin', '*');
     return {

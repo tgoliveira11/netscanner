@@ -5,3 +5,5 @@ export * from './capabilities.js';
 export * from './dns.js';
 export * from './mac-dns-cache.js';
 export * from './network-observation.js';
+export * from './diagnostics.js';
+export * from './wifi-scan.js';

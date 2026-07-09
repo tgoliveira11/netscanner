@@ -261,7 +261,7 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
   }, [edges, nodeById, nodes]);
 
   const onWheel = useCallback(
-    (e: React.WheelEvent) => {
+    (e: WheelEvent) => {
       e.preventDefault();
       const rect = viewportRef.current?.getBoundingClientRect();
       if (!rect) return;
@@ -271,10 +271,16 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
     [zoomBy],
   );
 
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [onWheel]);
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
-      e.preventDefault();
       window.getSelection()?.removeAllRanges();
       dragRef.current = { x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY };
       dragActiveRef.current = false;
@@ -292,7 +298,6 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
     if (!dragActiveRef.current && Math.hypot(dx, dy) < 4) return;
     if (!dragActiveRef.current) window.getSelection()?.removeAllRanges();
     dragActiveRef.current = true;
-    e.preventDefault();
     setIsDragging(true);
     setView((cur) => ({
       ...cur,
@@ -384,7 +389,6 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
         className={`topology-canvas relative w-full flex-1 overflow-hidden rounded-lg border border-edge bg-base/40 select-none touch-none ${
           fullPage ? 'min-h-[calc(100vh-12rem)]' : 'min-h-[600px]'
         } ${isDragging ? 'topology-panning cursor-grabbing' : 'cursor-grab'}`}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
