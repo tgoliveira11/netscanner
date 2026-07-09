@@ -59,6 +59,7 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
         ip: d.ip,
         deviceType: d.deviceType,
         brand: d.brand ?? null,
+        hostname: d.hostname ?? null,
         routerScrapeUser: d.routerScrapeUser!,
         routerScrapePassword: d.routerScrapePassword!,
       }));

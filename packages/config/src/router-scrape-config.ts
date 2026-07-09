@@ -11,6 +11,7 @@ export interface DeviceRouterScrapeInput {
   ip: string;
   deviceType: string;
   brand?: string | null;
+  hostname?: string | null;
   routerScrapeUser?: string | null;
   routerScrapePassword?: string | null;
 }
@@ -32,6 +33,26 @@ export function parseRouterScrapeTargetsLine(raw: string): RouterScrapeTarget[] 
     out.push({ baseUrl, kind: kindRaw, username, password });
   }
   return out;
+}
+
+/** Admin UI: one target per line (`url|kind|user|password`). */
+export function formatRouterScrapeTargetsForAdmin(raw: string | undefined | null): string {
+  if (!raw?.trim()) return '';
+  return raw
+    .split(';')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Normalize admin multiline input back to semicolon-separated storage. */
+export function normalizeRouterScrapeTargetsInput(raw: string): string {
+  const lines = raw
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(';'))
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  return lines.join(';');
 }
 
 function normalizeUrl(baseUrl: string): string {
@@ -62,11 +83,17 @@ export function resolveRouterScrapeTargets(config: AppConfig): RouterScrapeTarge
   return [...byUrl.values()];
 }
 
-function defaultScrapeKind(_device: DeviceRouterScrapeInput): 'openwrt' | 'compal' {
+function defaultScrapeKind(device: DeviceRouterScrapeInput): 'openwrt' | 'compal' {
+  const brand = device.brand?.toLowerCase() ?? '';
+  if (brand.includes('compal')) return 'compal';
+  const host = device.hostname?.toUpperCase() ?? '';
+  if (host.startsWith('CBN_RE_')) return 'compal';
+  const user = device.routerScrapeUser?.trim() ?? '';
+  if (/^(CLARO_|ISP_|CBN_)/i.test(user)) return 'compal';
   return 'openwrt';
 }
 
-/** Merge env targets with per-device credentials (device wins for same URL). */
+/** Merge env targets with per-device credentials (device wins user/password; env kind is kept). */
 export function mergeRouterScrapeTargets(
   config: AppConfig,
   devices: DeviceRouterScrapeInput[],
@@ -79,9 +106,10 @@ export function mergeRouterScrapeTargets(
   for (const device of devices) {
     if (!device.routerScrapeUser || !device.routerScrapePassword) continue;
     const baseUrl = normalizeUrl(`http://${device.ip}`);
+    const existing = byUrl.get(baseUrl);
     byUrl.set(baseUrl, {
       baseUrl,
-      kind: defaultScrapeKind(device),
+      kind: existing?.kind ?? defaultScrapeKind(device),
       username: device.routerScrapeUser,
       password: device.routerScrapePassword,
     });

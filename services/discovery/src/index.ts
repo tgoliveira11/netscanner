@@ -5,6 +5,8 @@ export * from './domain/dhcp-fingerprint.js';
 export * from './domain/fingerprint-resolver.js';
 export * from './domain/pfsense-telemetry.js';
 export * from './infrastructure/pfsense-rest.adapter.js';
+export * from './infrastructure/pfsense-http-client.js';
+export * from './infrastructure/pfsense-rest-control.adapter.js';
 export * from './infrastructure/pfsense-telemetry-normalize.js';
 export * from './infrastructure/fritzbox-http.adapter.js';
 export * from './infrastructure/snmp-arp-lease-source.js';

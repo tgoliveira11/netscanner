@@ -5,6 +5,8 @@ import type { CveFinding, DnsProfile, Traffic } from '@netscanner/contracts';
 import { api } from '../lib/api';
 import { useStore } from '../lib/store';
 import { deviceMeta } from '../lib/device-ui';
+import { DeviceDiagnostics } from './DeviceDiagnostics';
+import { DeviceControl } from './DeviceControl';
 
 const fmtBytes = (n: number) =>
   n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 1e3 ? `${(n / 1e3).toFixed(0)} KB` : `${n} B`;
@@ -414,6 +416,9 @@ export function DeviceDrawer() {
             </section>
           );
         })()}
+
+        <DeviceDiagnostics device={device} />
+        <DeviceControl device={device} />
 
         {showRouterAccess && (
           <section className="mt-5 space-y-2">

@@ -64,7 +64,12 @@ export const useStore = create<StoreState>((set, get) => ({
 
   connect: () => {
     if (socket) return;
-    socket = io(API_URL, { path: '/socket.io', transports: ['websocket', 'polling'] });
+    socket = io(API_URL, {
+      path: '/socket.io',
+      transports: ['polling', 'websocket'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+    });
     socket.on('connect', () => set({ connected: true }));
     socket.on('disconnect', () => set({ connected: false }));
     socket.on('domain-event', (event: DomainEvent) => handleEvent(event, set, get));

@@ -98,3 +98,43 @@ model SpeedTestRecord {
 
   @@index([siteId, measuredAt])
 }
+
+/** Audit trail for pfSense control actions (block, pause, DHCP, etc.). */
+model PolicyAuditRecord {
+  id         String   @id
+  action     String
+  target     String
+  detailJson String   @default("{}")
+  actor      String   @default("local")
+  createdAt  DateTime @default(now())
+  undone     Boolean  @default(false)
+
+  @@index([createdAt])
+  @@index([target])
+}
+
+/** Active internet pause with expiry (TTL enforced by gateway worker). */
+model PolicyPauseRecord {
+  id        String   @id
+  deviceId  String?
+  ip        String
+  mac       String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([ip])
+}
+
+/** Parental schedule profiles pushed to pfSense schedules. */
+model ParentalScheduleRecord {
+  id                String   @id
+  name              String
+  deviceIdsJson     String   @default("[]")
+  weekdaysJson      String   @default("[]")
+  startTime         String
+  endTime           String
+  enabled           Boolean  @default(true)
+  pfsenseScheduleId String?
+  createdAt         DateTime @default(now())
+}

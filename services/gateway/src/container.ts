@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OuiLookup, loadOuiTable } from '@netscanner/kernel';
-import { loadConfig, loadEnvFile, resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, mergeRouterScrapeTargets, resolveRouterScrapeTargets, type AppConfig } from '@netscanner/config';
+import { resolveConfigFilePath, resolveSnmpCommunities, parseWifiPorts, resolveSnmpV3, mergeRouterScrapeTargets, resolveRouterScrapeTargets, loadAdminConfig, applyConfigToProcess, type AppConfig } from '@netscanner/config';
 import { createLogger, type Logger } from '@netscanner/logger';
 import {
   NodeCommandRunner,
@@ -23,6 +23,7 @@ import {
   LlmnrProbe,
   Ipv6NeighborProbe,
   PfSenseRestAdapter,
+  PfSenseRestControlAdapter,
   FritzBoxHttpAdapter,
   SnmpArpLeaseSource,
   CompositeLeaseSource,
@@ -95,6 +96,9 @@ import {
   PrismaSiteRepository,
   InMemorySiteRepository,
   ensureDefaultSite,
+  InMemoryPolicyAuditRepository,
+  PrismaPolicyAuditRepository,
+  type IPolicyAuditRepository,
 } from '@netscanner/inventory';
 import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IConnectionSource } from '@netscanner/contracts';
@@ -108,6 +112,8 @@ import { BackgroundWorker } from './application/background-worker.js';
 import { SpeedTestWorker } from './application/speed-test-worker.js';
 import { RunSpeedTestUseCase } from './application/run-speed-test.use-case.js';
 import { ActiveSiteService } from './application/active-site.service.js';
+import { DiagnosticsService } from './application/diagnostics.service.js';
+import { NetworkControlService } from './application/network-control.service.js';
 import { DnsActivityLog } from './application/dns-activity-log.js';
 import { createRuntimeSettings, type RuntimeSettingsService } from './application/runtime-settings.service.js';
 import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
@@ -152,6 +158,8 @@ export interface Container {
   listInterfaces: typeof listLocalInterfaces;
   activeSite: ActiveSiteService;
   siteRepo: ISiteRepository;
+  diagnostics: DiagnosticsService;
+  networkControl: NetworkControlService;
 }
 
 /**
@@ -326,6 +334,24 @@ async function buildSiteRepository(config: AppConfig, logger: Logger): Promise<I
   }
 }
 
+async function buildPolicyAuditRepository(config: AppConfig, logger: Logger): Promise<IPolicyAuditRepository> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryPolicyAuditRepository();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    return new PrismaPolicyAuditRepository(prisma);
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'policy audit Prisma unavailable; using in-memory store',
+    );
+    return new InMemoryPolicyAuditRepository();
+  }
+}
+
 async function buildSpeedTestRepository(config: AppConfig, logger: Logger): Promise<ISpeedTestRepository> {
   if (process.env.PERSISTENCE === 'memory') return new InMemorySpeedTestRepository();
   try {
@@ -401,8 +427,8 @@ async function buildPassiveSignalStore(
  */
 export async function buildContainer(): Promise<Container> {
   const configPath = resolveConfigFilePath(process.cwd());
-  loadEnvFile(configPath);
-  const config = loadConfig();
+  const config = loadAdminConfig(configPath);
+  applyConfigToProcess(config);
   const logBuffer = new LogRingBuffer(500);
   const logger: Logger = createLogger('gateway', logBuffer.asStream());
   const agentLogPath = path.join(process.cwd(), 'agent.log');
@@ -556,6 +582,7 @@ export async function buildContainer(): Promise<Container> {
           ip: c.ip,
           deviceType: c.deviceType,
           brand: c.brand,
+          hostname: c.hostname,
           routerScrapeUser: c.routerScrapeUser,
           routerScrapePassword: c.routerScrapePassword,
         })),
@@ -785,6 +812,37 @@ export async function buildContainer(): Promise<Container> {
   });
   const speedTestWorker = new SpeedTestWorker({ config, logger, runSpeedTest });
 
+  const policyAudit = await buildPolicyAuditRepository(config, logger);
+  let pfsenseControl: PfSenseRestControlAdapter | null = null;
+  if (config.PFSENSE_CONTROL_ENABLED && config.PFSENSE_URL?.trim() && config.PFSENSE_API_KEY?.trim()) {
+    pfsenseControl = new PfSenseRestControlAdapter(
+      {
+        baseUrl: config.PFSENSE_URL,
+        apiKey: config.PFSENSE_API_KEY,
+        insecureTls: config.PFSENSE_INSECURE_TLS,
+      },
+      logger,
+    );
+    logger.info('pfSense network control enabled');
+  }
+
+  const diagnostics = new DiagnosticsService(runner, fingerprint, repo, logger, getSiteId);
+  const networkControl = new NetworkControlService(
+    pfsenseControl,
+    repo,
+    policyAudit,
+    config,
+    logger,
+    getSiteId,
+  );
+  networkControl.start();
+
+  events.on((event) => {
+    if (event.type !== 'device.new') return;
+    const vlan = event.payload.device.signals?.pfsenseInterface as string | undefined;
+    void networkControl.autoblockDevice(event.payload.device.id, vlan ?? null);
+  });
+
   const container: Container = {
     config,
     logger,
@@ -826,6 +884,8 @@ export async function buildContainer(): Promise<Container> {
     listInterfaces: listLocalInterfaces,
     activeSite,
     siteRepo,
+    diagnostics,
+    networkControl,
   };
   container.runtimeSettings = createRuntimeSettings(container, configPath);
   return container;

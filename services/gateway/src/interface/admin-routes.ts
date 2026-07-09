@@ -84,6 +84,7 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
         ip: row.ip,
         deviceType: row.deviceType,
         brand: row.brand,
+        hostname: row.hostname,
         routerScrapeUser: row.routerScrapeUser,
         routerScrapePassword: row.routerScrapePassword,
       })),

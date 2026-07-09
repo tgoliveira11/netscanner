@@ -126,6 +126,13 @@ export const EnvSchema = z.object({
   SITE_AMBIGUOUS_THRESHOLD: z.coerce.number().default(0.6),
   /** Ignore geolocation for site matching when VPN/tunnel is detected. */
   SITE_VPN_IGNORE_GEO: envBool(true),
+  /** Enable pfSense write operations (block, pause, DHCP, etc.). */
+  PFSENSE_CONTROL_ENABLED: envBool(false),
+  /** Bearer token for /api/control/* (falls back to AGENT_CONTROL_TOKEN). */
+  CONTROL_TOKEN: z.string().optional(),
+  /** Auto-block new devices on listed VLANs (comma-separated pfSense interface labels). Off by default. */
+  AUTOBLOCK_ENABLED: envBool(false),
+  AUTOBLOCK_VLANS: z.string().default(''),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

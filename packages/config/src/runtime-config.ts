@@ -2,13 +2,19 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { EnvSchema, type AppConfig } from './env-schema.js';
 import { loadConfig, resetConfigCache } from './config-loader.js';
+import {
+  formatRouterScrapeTargetsForAdmin,
+  normalizeRouterScrapeTargetsInput,
+} from './router-scrape-config.js';
 
-export type ConfigValueType = 'string' | 'number' | 'boolean' | 'secret';
+export type ConfigValueType = 'string' | 'number' | 'boolean' | 'secret' | 'multiline';
 
 export interface ConfigFieldMeta {
   key: keyof AppConfig & string;
   label: string;
   description: string;
+  /** Longer hover help in Admin; falls back to description when omitted. */
+  help?: string;
   type: ConfigValueType;
   group: string;
   restartRequired: boolean;
@@ -21,6 +27,14 @@ export const CONFIG_FIELDS: ConfigFieldMeta[] = [
   { key: 'WEB_ORIGIN', label: 'Web origin', description: 'Allowed CORS origin for the dev dashboard.', type: 'string', group: 'Gateway', restartRequired: true },
   { key: 'ONBOARDING_ORIGIN', label: 'Onboarding origin', description: 'Hosted onboarding site allowed to poll /api/health.', type: 'string', group: 'Gateway', restartRequired: true },
   { key: 'DATABASE_URL', label: 'Database URL', description: 'SQLite file path (Prisma datasource).', type: 'string', group: 'Persistence', restartRequired: true },
+  { key: 'PFSENSE_CONTROL_ENABLED', label: 'pfSense control enabled', description: 'Enable block/pause/DHCP/bandwidth writes via pfSense REST API.', type: 'boolean', group: 'Network Control', restartRequired: true },
+  { key: 'AUTOBLOCK_ENABLED', label: 'Autoblock new devices', description: 'Auto-add new devices to NS_AUTOBLOCK alias (off by default).', type: 'boolean', group: 'Network Control', restartRequired: true },
+  { key: 'AUTOBLOCK_VLANS', label: 'Autoblock VLANs', description: 'Comma-separated pfSense interface labels (e.g. LAN_GUEST). Empty = all VLANs when autoblock is on.', type: 'string', group: 'Network Control', restartRequired: true },
+  { key: 'CONTROL_TOKEN', label: 'Control API token', description: 'Optional Bearer for /api/control/* when set; localhost works without it.', type: 'secret', group: 'Network Control', restartRequired: true },
+  { key: 'SITE_AUTO_CREATE', label: 'Auto-create sites', description: 'Create a new site when fingerprint does not match any known site.', type: 'boolean', group: 'Network Sites', restartRequired: true },
+  { key: 'SITE_MATCH_THRESHOLD', label: 'Site match threshold', description: 'Minimum score (0–1) to accept an automatic site match.', type: 'number', group: 'Network Sites', restartRequired: true },
+  { key: 'SITE_AMBIGUOUS_THRESHOLD', label: 'Site ambiguous threshold', description: 'Minimum score to show ambiguous site confirmation UI.', type: 'number', group: 'Network Sites', restartRequired: true },
+  { key: 'SITE_VPN_IGNORE_GEO', label: 'Site VPN ignore geo', description: 'Ignore geolocation for site matching when VPN/tunnel is detected.', type: 'boolean', group: 'Network Sites', restartRequired: true },
   { key: 'SCAN_CONCURRENCY', label: 'Scan concurrency', description: 'Max parallel host probes during discovery.', type: 'number', group: 'Scanning', restartRequired: false },
   { key: 'DISCOVERY_TIMEOUT_MS', label: 'Discovery timeout (ms)', description: 'Per-host discovery timeout.', type: 'number', group: 'Scanning', restartRequired: false },
   { key: 'DISABLE_NMAP', label: 'Disable nmap', description: 'Force pure-Node scanning even if nmap is installed.', type: 'boolean', group: 'Scanning', restartRequired: true },
@@ -49,12 +63,18 @@ export const CONFIG_FIELDS: ConfigFieldMeta[] = [
   { key: 'SNMP_COMMUNITIES', label: 'SNMP communities', description: 'Comma-separated list tried in order.', type: 'string', group: 'Discovery', restartRequired: false },
   { key: 'SNMP_SWITCH_HOST', label: 'SNMP switch host', description: 'Managed switch/AP for BRIDGE-MIB wired/WiFi.', type: 'string', group: 'Discovery', restartRequired: true },
   { key: 'SNMP_WIFI_PORTS', label: 'SNMP WiFi ports', description: 'BRIDGE-MIB bridge-port numbers (dot1dTpFdbPort) where WiFi APs uplink. MACs learned on these ports are treated as wifi.', type: 'string', group: 'Discovery', restartRequired: false },
+  { key: 'SNMP_V3_USER', label: 'SNMP v3 user', description: 'SNMPv3 username (optional).', type: 'string', group: 'Discovery', restartRequired: true },
+  { key: 'SNMP_V3_AUTH_PASS', label: 'SNMP v3 auth password', description: 'SNMPv3 authentication password.', type: 'secret', group: 'Discovery', restartRequired: true },
+  { key: 'SNMP_V3_PRIV_PASS', label: 'SNMP v3 priv password', description: 'SNMPv3 privacy password.', type: 'secret', group: 'Discovery', restartRequired: true },
+  { key: 'SNMP_V3_AUTH_PROTO', label: 'SNMP v3 auth proto', description: 'SNMPv3 auth protocol (SHA, MD5).', type: 'string', group: 'Discovery', restartRequired: true },
+  { key: 'SNMP_V3_PRIV_PROTO', label: 'SNMP v3 priv proto', description: 'SNMPv3 privacy protocol (AES, DES).', type: 'string', group: 'Discovery', restartRequired: true },
+  { key: 'SNMP_V3_SEC_LEVEL', label: 'SNMP v3 security level', description: 'noAuthNoPriv, authNoPriv, or authPriv.', type: 'string', group: 'Discovery', restartRequired: true },
   { key: 'ROUTER_SNMP_HOST', label: 'Router SNMP host', description: 'Gateway SNMP for ARP/MAC table (no pfSense).', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'ROUTER_SCRAPE_URL', label: 'Router scrape URL', description: 'Base URL of OpenWrt LuCI or Compal router panel (e.g. http://192.168.1.2).', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'ROUTER_SCRAPE_KIND', label: 'Router scrape kind', description: 'Panel type: openwrt (LuCI DHCP) or compal (ARP table).', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'ROUTER_SCRAPE_USER', label: 'Router scrape user', description: 'HTTP login for the router panel.', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'ROUTER_SCRAPE_PASSWORD', label: 'Router scrape password', description: 'HTTP password for the router panel.', type: 'secret', group: 'Integrations', restartRequired: true },
-  { key: 'ROUTER_SCRAPE_TARGETS', label: 'Router scrape targets', description: 'Multiple routers: url|kind|user|password separated by ; (e.g. http://192.168.1.2|openwrt|root|pass;http://192.168.10.3|openwrt|root|pass2). Overrides single URL when set.', type: 'string', group: 'Integrations', restartRequired: true },
+  { key: 'ROUTER_SCRAPE_TARGETS', label: 'Router scrape targets', description: 'One router per line: url|kind|user|password (kind = openwrt or compal).', type: 'multiline', group: 'Integrations', restartRequired: true },
   { key: 'TOPOLOGY_MODE', label: 'Topology mode', description: 'simple = pfSense → switch → clients; vlan = multi-VLAN home layout with optional WiFi APs.', type: 'string', group: 'Topology', restartRequired: false },
   { key: 'TOPOLOGY_VLAN_ORDER', label: 'Topology VLAN order', description: 'Comma-separated pfSense interface labels for vlan mode (e.g. VLAN40,VLAN10,VLAN30).', type: 'string', group: 'Topology', restartRequired: false },
   { key: 'TOPOLOGY_WIRED_VLAN', label: 'Topology wired VLAN', description: 'pfSense interface label for the wired switch segment in vlan mode (e.g. VLAN40).', type: 'string', group: 'Topology', restartRequired: false },
@@ -67,12 +87,23 @@ export const CONFIG_FIELDS: ConfigFieldMeta[] = [
   { key: 'FRITZBOX_URL', label: 'Fritz!Box URL', description: 'Base URL for Fritz!Box host list.', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'FRITZBOX_USER', label: 'Fritz!Box user', description: 'Fritz!Box login username.', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'FRITZBOX_PASSWORD', label: 'Fritz!Box password', description: 'Fritz!Box login password.', type: 'secret', group: 'Integrations', restartRequired: true },
+  { key: 'UNIFI_URL', label: 'UniFi URL', description: 'UniFi controller base URL.', type: 'string', group: 'Integrations', restartRequired: true },
+  { key: 'UNIFI_API_KEY', label: 'UniFi API key', description: 'UniFi API key.', type: 'secret', group: 'Integrations', restartRequired: true },
+  { key: 'UNIFI_SITE', label: 'UniFi site', description: 'UniFi site name (default).', type: 'string', group: 'Integrations', restartRequired: true },
+  { key: 'OMADA_URL', label: 'Omada URL', description: 'TP-Link Omada controller URL.', type: 'string', group: 'Integrations', restartRequired: true },
+  { key: 'OMADA_CLIENT_ID', label: 'Omada client ID', description: 'Omada Open API client id.', type: 'string', group: 'Integrations', restartRequired: true },
+  { key: 'OMADA_CLIENT_SECRET', label: 'Omada client secret', description: 'Omada Open API client secret.', type: 'secret', group: 'Integrations', restartRequired: true },
+  { key: 'OMADA_SITE_ID', label: 'Omada site ID', description: 'Omada site identifier.', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'PASSIVE_DNS_ENABLED', label: 'DNS passive', description: 'tcpdump :53 for hostname hints.', type: 'boolean', group: 'Discovery', restartRequired: true },
   { key: 'PASSIVE_IGMP_ENABLED', label: 'IGMP passive', description: 'Multicast joins (Chromecast, TVs).', type: 'boolean', group: 'Discovery', restartRequired: true },
+  { key: 'PASSIVE_DHCPV6_ENABLED', label: 'DHCPv6 passive', description: 'Passive DHCPv6 fingerprint capture.', type: 'boolean', group: 'Discovery', restartRequired: true },
+  { key: 'MAC_DNS_CACHE_ENABLED', label: 'MAC DNS cache', description: 'Resolve hostnames from local DNS cache by MAC.', type: 'boolean', group: 'Discovery', restartRequired: true },
+  { key: 'PROTOCOL_PROBE_ENABLED', label: 'Protocol probe', description: 'Lightweight protocol banners during discovery.', type: 'boolean', group: 'Discovery', restartRequired: true },
   { key: 'PRESENCE_POLL_ENABLED', label: 'Presence polling', description: 'Fast ping loop for near-real-time online/offline.', type: 'boolean', group: 'Discovery', restartRequired: true },
   { key: 'PRESENCE_POLL_INTERVAL_MS', label: 'Presence interval (ms)', description: 'How often to ping known devices (default 30s).', type: 'number', group: 'Discovery', restartRequired: true },
   { key: 'PRESENCE_PING_TIMEOUT_MS', label: 'Presence ping timeout (ms)', description: 'ICMP timeout per device (default 2500ms).', type: 'number', group: 'Discovery', restartRequired: true },
   { key: 'PRESENCE_OFFLINE_AFTER_MISSES', label: 'Offline after misses', description: 'Consecutive failed polls before marking offline (default 4).', type: 'number', group: 'Discovery', restartRequired: true },
+  { key: 'PRESENCE_PING_CONCURRENCY', label: 'Presence ping concurrency', description: 'Parallel ICMP probes during presence polling.', type: 'number', group: 'Discovery', restartRequired: true },
   { key: 'AGENT_ENCRYPTION_KEY', label: 'DB encryption key', description: 'Encrypts router passwords at rest (64-char hex). Auto-generated file if unset.', type: 'secret', group: 'Agent', restartRequired: true, hidden: true },
   { key: 'P0F_PASSIVE_ENABLED', label: 'p0f passive (TCP SYN)', description: 'OS hints from passive SYN stack fingerprinting.', type: 'boolean', group: 'Discovery', restartRequired: true },
   { key: 'CDP_PASSIVE_ENABLED', label: 'CDP passive', description: 'Cisco CDP neighbor capture (Cisco gear only).', type: 'boolean', group: 'Discovery', restartRequired: true },
@@ -90,6 +121,44 @@ const SECRET_KEYS = new Set(CONFIG_FIELDS.filter((f) => f.type === 'secret').map
 export function resolveConfigFilePath(cwd = process.cwd()): string {
   if (process.env.NETSCANNER_CONFIG_PATH) return process.env.NETSCANNER_CONFIG_PATH;
   return path.join(cwd, 'config.env');
+}
+
+export function readEnvFileMap(filePath: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!existsSync(filePath)) return out;
+  const text = readFileSync(filePath, 'utf8');
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/** Keys editable via /admin — config.env values override the same keys from the process environment. */
+export const ADMIN_CONFIG_KEYS = new Set(
+  CONFIG_FIELDS.filter((f) => !f.hidden).map((f) => f.key),
+);
+
+/**
+ * Load config with admin file precedence: for every admin-visible key present in
+ * config.env, that value wins over LaunchDaemon / shell environment.
+ */
+export function loadAdminConfig(configPath: string, baseEnv: NodeJS.ProcessEnv = process.env): AppConfig {
+  resetConfigCache();
+  const fileEnv = readEnvFileMap(configPath);
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  for (const key of ADMIN_CONFIG_KEYS) {
+    if (key in fileEnv) env[key] = fileEnv[key];
+  }
+  return loadConfig(env);
 }
 
 export function loadEnvFile(filePath: string): void {
@@ -118,14 +187,14 @@ function serializeEnvValue(value: unknown): string {
 export function saveEnvFile(filePath: string, values: Record<string, string | number | boolean>): void {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const lines = [
-    '# NetScanner runtime config — edited via /admin or manually.',
+    '# NetScanner runtime config — edited via /admin (takes precedence over LaunchDaemon env).',
     `# Updated ${new Date().toISOString()}`,
     '',
   ];
   for (const field of CONFIG_FIELDS) {
     if (field.hidden) continue;
     const v = values[field.key];
-    if (v === undefined || v === null || v === '') continue;
+    if (v === undefined || v === null) continue;
     lines.push(`${field.key}=${serializeEnvValue(v)}`);
   }
   writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
@@ -145,6 +214,8 @@ export function configForAdmin(config: AppConfig): Record<string, string | numbe
       out[field.key] = raw ? maskSecret(String(raw)) : null;
     } else if (raw === undefined) {
       out[field.key] = null;
+    } else if (field.key === 'ROUTER_SCRAPE_TARGETS') {
+      out[field.key] = formatRouterScrapeTargetsForAdmin(String(raw));
     } else {
       out[field.key] = raw as string | number | boolean;
     }
@@ -165,8 +236,15 @@ export function parseConfigPatch(
     const v = body[field.key];
     if (field.type === 'secret') {
       if (v === null || v === undefined || v === '' || v === maskSecret('x')) continue;
+    } else if (v === null || v === undefined) {
+      continue;
+    } else if (v === '' && field.type !== 'string' && field.type !== 'multiline') {
+      continue;
     }
-    if (v === null || v === undefined || v === '') continue;
+    if (field.key === 'ROUTER_SCRAPE_TARGETS' && typeof v === 'string') {
+      patch[field.key] = normalizeRouterScrapeTargetsInput(v);
+      continue;
+    }
     patch[field.key] = v;
   }
 
@@ -197,9 +275,7 @@ function flattenConfig(config: AppConfig): Record<string, string> {
 }
 
 export function reloadRuntimeConfig(configPath: string): AppConfig {
-  resetConfigCache();
-  loadEnvFile(configPath);
-  return loadConfig();
+  return loadAdminConfig(configPath);
 }
 
 export function applyConfigToProcess(config: AppConfig): void {

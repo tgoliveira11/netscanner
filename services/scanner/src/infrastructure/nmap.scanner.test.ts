@@ -13,7 +13,7 @@ function runner(): ICommandRunner & { lastArgs: string[] } {
     which: vi.fn(async () => true),
     run: vi.fn(async (_cmd, args) => {
       state.lastArgs = args;
-      return { stdout: minimalXml, stderr: '', code: 0 };
+      return { stdout: minimalXml, stderr: '', code: 0, timedOut: false };
     }),
   };
 }

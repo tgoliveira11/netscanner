@@ -7,6 +7,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Diagnostics toolkit (A1–A4)** — ping, traceroute, DNS lookup, single-host port scan in the device drawer; **Tools** page with Wi‑Fi scanner, generic DNS, camera heuristics + RTSP probe (travel mode disclaimer).
+- **Network control (B0–B5)** — pfSense REST bootstrap (`NS_BLOCK`, `NS_PAUSED`, `NS_AUTOBLOCK`, `NS_LIMIT`); block/unblock/pause with TTL expiry; DHCP static mapping; autoblock on `device.new` (off by default, VLAN filter via `AUTOBLOCK_VLANS`); bandwidth limit tracking; parental schedules via pfSense + Admin panel; policy audit log in SQLite.
 - **Network sites** — isolated inventory per location (home, hotel, office); fingerprint match (gateway MAC/IP, CIDR, router id, SSIDs, geo); auto-create unknown sites; manual lock + rename in UI; VPN-aware matching; per-site integration overrides.
 - **WAN speed test** — background download/upload sampling via Cloudflare (`SPEED_TEST_*`); results stored in SQLite; `GET /api/speed-tests/report`, manual `POST /api/speed-tests/run`; Admin **Internet speed** panel with 30-day report.
 - **pfSense identity classification** — MAC/IP matching `pfsenseInterfaces` → `firewall`; WAN next-hop / WAN* CPE → `router` (ISP modem).
