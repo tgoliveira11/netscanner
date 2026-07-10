@@ -3,115 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AppNav } from '../../components/AppNav';
+import { AdminTabs, useAdminTab } from '../../components/AdminTabs';
+import { AdminTabPanel } from '../../components/AdminTabPanel';
+import { AdminWirelessSection } from '../../components/AdminWirelessSection';
+import { CompalPanel } from '../../components/CompalPanel';
+import { LoadingBlock } from '../../components/LoadingSpinner';
+import { PfSenseGatewaysPanel } from '../../components/PfSenseGatewaysPanel';
 import { NetworkControlPanel } from '../../components/NetworkControlPanel';
-import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type AdminWirelessResponse, type ConfigFieldSchema, type SpeedTestReport } from '../../lib/api';
-
-function fmtMbps(v: number | null | undefined): string {
-  if (v == null) return '—';
-  return `${v.toFixed(1)} Mbps`;
-}
-
-function SpeedTestPanel() {
-  const [report, setReport] = useState<SpeedTestReport | null>(null);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setReport(await api.speedTestReport(30));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const runNow = async () => {
-    setRunning(true);
-    setError(null);
-    try {
-      await api.runSpeedTest();
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  return (
-    <div className="w-full space-y-3">
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => void runNow()}
-          disabled={running}
-          className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
-        >
-          {running ? 'Testing…' : 'Run test now'}
-        </button>
-        <button
-          type="button"
-          onClick={() => void load()}
-          className="rounded-lg border border-edge px-3 py-1.5 text-xs text-muted hover:text-slate-200"
-        >
-          Refresh report
-        </button>
-      </div>
-      {error && <p className="text-xs text-bad">{error}</p>}
-      {report && (
-        <>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <StatusCard label="Latest download" value={fmtMbps(report.latest?.downloadMbps)} />
-            <StatusCard label="Latest upload" value={fmtMbps(report.latest?.uploadMbps)} />
-            <StatusCard
-              label="30d avg download"
-              value={fmtMbps(report.avgDownloadMbps)}
-            />
-            <StatusCard label="Samples (30d)" value={String(report.count)} />
-          </div>
-          {report.samples.length > 0 && (
-            <div className="overflow-auto rounded-lg border border-edge">
-              <table className="w-full min-w-[32rem] text-left text-xs">
-                <thead className="border-b border-edge bg-panelup text-muted">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">When</th>
-                    <th className="px-3 py-2 font-medium">↓ Mbps</th>
-                    <th className="px-3 py-2 font-medium">↑ Mbps</th>
-                    <th className="px-3 py-2 font-medium">Latency</th>
-                    <th className="px-3 py-2 font-medium">Trigger</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...report.samples].reverse().slice(-20).reverse().map((s) => (
-                    <tr key={s.id} className="border-b border-edge/50">
-                      <td className="px-3 py-1.5 text-slate-300">
-                        {new Date(s.measuredAt).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-1.5">{fmtMbps(s.downloadMbps)}</td>
-                      <td className="px-3 py-1.5">{fmtMbps(s.uploadMbps)}</td>
-                      <td className="px-3 py-1.5">{s.latencyMs != null ? `${Math.round(s.latencyMs)} ms` : '—'}</td>
-                      <td className="px-3 py-1.5 text-muted">{s.trigger}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {report.latest?.measuredAt && (
-            <p className="text-[10px] text-muted">
-              Last sample: {new Date(report.latest.measuredAt).toLocaleString()} · adjust interval via
-              SPEED_TEST_INTERVAL_MS in Background settings
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
+import { SpeedTestPanel } from '../../components/SpeedTestPanel';
+import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type ConfigFieldSchema } from '../../lib/api';
 
 function LogViewer({ lines }: { lines: AdminLogLine[] }) {
   return (
@@ -258,24 +158,18 @@ function ConfigField({
 
 export default function AdminPage() {
   const [obs, setObs] = useState<AdminObservability | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useAdminTab('overview');
   const [config, setConfig] = useState<AdminConfigResponse | null>(null);
   const [logs, setLogs] = useState<AdminLogLine[]>([]);
-  const [wireless, setWireless] = useState<AdminWirelessResponse | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const restartingRef = useRef(false);
 
-  const refreshWireless = useCallback(async () => {
-    try {
-      setWireless(await api.adminWireless());
-    } catch {
-      /* wireless probe is slow — don't block the rest of admin */
-    }
-  }, []);
-
-  const refresh = useCallback(async (opts?: { skipWireless?: boolean }) => {
+  const refresh = useCallback(async () => {
+    setLoading(true);
     try {
       const [o, c, l] = await Promise.all([
         api.adminObservability(),
@@ -286,17 +180,18 @@ export default function AdminPage() {
       setConfig(c);
       setLogs([...l.memory, ...l.file].slice(-300).reverse());
       setError(null);
-      if (!opts?.skipWireless) void refreshWireless();
     } catch (e) {
       if (restartingRef.current) return;
       const msg = e instanceof Error ? e.message : 'Failed to load admin data';
       if (msg === 'Failed to fetch') {
-        setError('Agent indisponível — verifique se está rodando em http://127.0.0.1:4000');
+        setError('Agent unavailable — check it is running at http://127.0.0.1:4000');
       } else {
         setError(msg);
       }
+    } finally {
+      setLoading(false);
     }
-  }, [refreshWireless]);
+  }, []);
 
   useEffect(() => {
     void refresh();
@@ -373,17 +268,16 @@ export default function AdminPage() {
 
   const restart = async () => {
     setError(null);
-    setMessage('Reiniciando agente…');
+    setMessage('Restarting agent…');
     restartingRef.current = true;
     try {
       await api.agentRestart();
-      setMessage('Agente reiniciado.');
-      await refresh({ skipWireless: true });
-      void refreshWireless();
+      setMessage('Agent restarted.');
+      await refresh();
     } catch (e) {
       setMessage(null);
       const msg = e instanceof Error ? e.message : 'Restart failed';
-      setError(msg === 'Failed to fetch' ? 'Não foi possível contactar o agente durante o restart.' : msg);
+      setError(msg === 'Failed to fetch' ? 'Could not reach the agent during restart.' : msg);
     } finally {
       restartingRef.current = false;
     }
@@ -420,10 +314,14 @@ export default function AdminPage() {
         <div className="rounded-lg border border-good/40 bg-good/10 px-4 py-2 text-sm text-good">{message}</div>
       )}
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-200">Runtime status</h2>
-        {obs && (
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <AdminTabs active={tab} onChange={setTab} />
+
+      <AdminTabPanel tab="overview" active={tab}>
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-slate-200">Runtime status</h2>
+            <LoadingBlock loading={loading && !obs} label="Loading status…">
+              {obs && (
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <StatusCard label="Version" value={obs.version} />
             <StatusCard label="Uptime" value={`${obs.uptimeSec}s · pid ${obs.pid}`} />
             <StatusCard label="Devices" value={obs.inventory.deviceCount} />
@@ -466,52 +364,39 @@ export default function AdminPage() {
                   : 'none'
               }
             />
-          </div>
-        )}
-      </section>
+                </div>
+              )}
+            </LoadingBlock>
+          </section>
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-200">WiFi / SSIDs (OpenWrt scrape targets)</h2>
-        {!wireless?.configured && (
-          <p className="text-xs text-muted">Configure ROUTER_SCRAPE_TARGETS or ROUTER_SCRAPE_URL with kind=openwrt.</p>
-        )}
-        {wireless?.configured && (
-          <div className="grid gap-3 md:grid-cols-2">
-            {wireless.routers.map((r) => (
-              <div key={r.url} className="rounded-lg border border-edge bg-panelup p-3">
-                <div className="text-sm font-medium text-slate-200">{r.host}</div>
-                <div className="text-xs text-muted">{r.url}</div>
-                {!r.ok && <div className="mt-1 text-xs text-bad">{r.error ?? 'probe failed'}</div>}
-                {r.ok && r.ssids.length === 0 && (
-                  <div className="mt-1 text-xs text-muted">No WiFi radios / SSIDs (switch or WiFi disabled)</div>
-                )}
-                {r.ok && r.ssids.length > 0 && (
-                  <ul className="mt-2 space-y-1 text-xs text-slate-300">
-                    {r.ssids.map((s) => (
-                      <li key={`${s.device}-${s.ifname}`}>
-                        <span className={s.up ? 'text-good' : 'text-muted'}>{s.up ? '●' : '○'}</span>{' '}
-                        <span className="font-medium">{s.ssid || '(hidden)'}</span>
-                        <span className="text-muted"> · {s.device} ch={s.channel ?? '—'} {s.mode ?? ''}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-slate-200">Logs</h2>
+            <LoadingBlock loading={loading && logs.length === 0} label="Loading logs…">
+              <LogViewer lines={logs} />
+            </LoadingBlock>
+          </section>
+      </AdminTabPanel>
 
-      <NetworkControlPanel />
+      <AdminTabPanel tab="integrations" active={tab}>
+        <CompalPanel />
+      </AdminTabPanel>
 
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-slate-200">Internet speed (WAN)</h2>
+      <AdminTabPanel tab="network" active={tab}>
+        <PfSenseGatewaysPanel />
+        <AdminWirelessSection />
+        <NetworkControlPanel />
+      </AdminTabPanel>
+
+      <AdminTabPanel tab="speed" active={tab}>
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold text-slate-200">Internet speed</h2>
           <SpeedTestPanel />
-        </div>
-      </section>
+        </section>
+      </AdminTabPanel>
 
-      <CollapsibleSection title="Recent discoveries">
+      <AdminTabPanel tab="discovery" active={tab}>
+        <LoadingBlock loading={loading && !obs} label="Loading discoveries…">
+        <CollapsibleSection title="Recent discoveries" defaultOpen>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="card p-4">
             <h3 className="mb-2 text-xs font-semibold uppercase text-muted">DHCP fingerprints</h3>
@@ -551,12 +436,10 @@ export default function AdminPage() {
           </div>
         </div>
       </CollapsibleSection>
+        </LoadingBlock>
+      </AdminTabPanel>
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-slate-200">Logs</h2>
-        <LogViewer lines={logs} />
-      </section>
-
+      <AdminTabPanel tab="settings" active={tab}>
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-200">Configuration</h2>
@@ -564,6 +447,7 @@ export default function AdminPage() {
             {saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>
+        <LoadingBlock loading={loading && !config} label="Loading configuration…">
         {config &&
           sortedGroups.map(([group, fields]) => (
             <div key={group} className="space-y-2">
@@ -581,7 +465,9 @@ export default function AdminPage() {
               </div>
             </div>
           ))}
+        </LoadingBlock>
       </section>
+      </AdminTabPanel>
     </main>
   );
 }

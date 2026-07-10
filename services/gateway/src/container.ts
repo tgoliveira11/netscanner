@@ -99,6 +99,9 @@ import {
   InMemoryPolicyAuditRepository,
   PrismaPolicyAuditRepository,
   type IPolicyAuditRepository,
+  type IDevicePolicyRepository,
+  InMemoryDevicePolicyRepository,
+  PrismaDevicePolicyRepository,
 } from '@netscanner/inventory';
 import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IConnectionSource } from '@netscanner/contracts';
@@ -111,6 +114,7 @@ import { BuildTopologyUseCase } from './application/build-topology.use-case.js';
 import { BackgroundWorker } from './application/background-worker.js';
 import { SpeedTestWorker } from './application/speed-test-worker.js';
 import { RunSpeedTestUseCase } from './application/run-speed-test.use-case.js';
+import { RunWanSpeedTestsUseCase } from './application/run-wan-speed-tests.use-case.js';
 import { ActiveSiteService } from './application/active-site.service.js';
 import { DiagnosticsService } from './application/diagnostics.service.js';
 import { NetworkControlService } from './application/network-control.service.js';
@@ -142,6 +146,7 @@ export interface Container {
   backgroundWorker: BackgroundWorker;
   speedTestWorker: SpeedTestWorker;
   runSpeedTest: RunSpeedTestUseCase;
+  runWanSpeedTests: RunWanSpeedTestsUseCase;
   listSpeedTests: ListSpeedTestsUseCase;
   buildSpeedTestReport: BuildSpeedTestReportUseCase;
   presenceMonitor: PresenceMonitor;
@@ -349,6 +354,24 @@ async function buildPolicyAuditRepository(config: AppConfig, logger: Logger): Pr
       'policy audit Prisma unavailable; using in-memory store',
     );
     return new InMemoryPolicyAuditRepository();
+  }
+}
+
+async function buildDevicePolicyRepository(config: AppConfig, logger: Logger): Promise<IDevicePolicyRepository> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryDevicePolicyRepository();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    return new PrismaDevicePolicyRepository(prisma);
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'device policy Prisma unavailable; using in-memory store',
+    );
+    return new InMemoryDevicePolicyRepository();
   }
 }
 
@@ -809,10 +832,19 @@ export async function buildContainer(): Promise<Container> {
     tester: speedTester,
     record: recordSpeedTest,
     sessions,
+    leaseSource,
   });
-  const speedTestWorker = new SpeedTestWorker({ config, logger, runSpeedTest });
+  const runWanSpeedTests = new RunWanSpeedTestsUseCase({
+    config,
+    logger,
+    record: recordSpeedTest,
+    sessions,
+    leaseSource,
+  });
+  const speedTestWorker = new SpeedTestWorker({ config, logger, runSpeedTest, speedTestRepo: speedTestRepo });
 
   const policyAudit = await buildPolicyAuditRepository(config, logger);
+  const devicePolicies = await buildDevicePolicyRepository(config, logger);
   let pfsenseControl: PfSenseRestControlAdapter | null = null;
   if (config.PFSENSE_CONTROL_ENABLED && config.PFSENSE_URL?.trim() && config.PFSENSE_API_KEY?.trim()) {
     pfsenseControl = new PfSenseRestControlAdapter(
@@ -831,9 +863,11 @@ export async function buildContainer(): Promise<Container> {
     pfsenseControl,
     repo,
     policyAudit,
+    devicePolicies,
     config,
     logger,
     getSiteId,
+    leaseSource,
   );
   networkControl.start();
 
@@ -868,6 +902,7 @@ export async function buildContainer(): Promise<Container> {
     backgroundWorker,
     speedTestWorker,
     runSpeedTest,
+    runWanSpeedTests,
     listSpeedTests,
     buildSpeedTestReport,
     presenceMonitor,

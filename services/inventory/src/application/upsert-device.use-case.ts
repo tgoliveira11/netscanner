@@ -68,6 +68,8 @@ export class UpsertDeviceUseCase {
 
     if (!stored) {
       const fields = this.snapshotFields(snapshot);
+      const livenessVerified =
+        snapshot.latencyMs != null || snapshot.signals?.livenessVerified === true;
       const device: Device = {
         id: uuid(),
         ...fields,
@@ -77,7 +79,7 @@ export class UpsertDeviceUseCase {
         routerScrapePasswordSet: false,
         firstSeen: now,
         lastSeen: now,
-        isOnline: true,
+        isOnline: livenessVerified,
         signals: updateBaseline({
           id: 'new',
           ...fields,
@@ -87,7 +89,7 @@ export class UpsertDeviceUseCase {
           routerScrapePasswordSet: false,
           firstSeen: now,
           lastSeen: now,
-          isOnline: true,
+          isOnline: livenessVerified,
         } as Device),
       };
       await this.repo.save(device, sid);
@@ -95,6 +97,8 @@ export class UpsertDeviceUseCase {
     }
 
     const fields = this.snapshotFields(snapshot);
+    const livenessVerified =
+      snapshot.latencyMs != null || snapshot.signals?.livenessVerified === true;
     const keepClass =
       stored.deviceType !== 'unknown' &&
       stored.classificationConfidence >= fields.classificationConfidence;
@@ -124,7 +128,7 @@ export class UpsertDeviceUseCase {
       routerScrapeUser: stored.routerScrapeUser ?? null,
       routerScrapePassword: stored.routerScrapePassword ?? null,
       lastSeen: now,
-      isOnline: true,
+      isOnline: livenessVerified ? true : stored.isOnline,
     };
     const changes = diffDevice(stored, next);
     const anomalies = detectBehavioralAnomalies(stored, next);

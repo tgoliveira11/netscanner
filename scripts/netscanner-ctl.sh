@@ -76,6 +76,9 @@ cmd_deploy() {
   if [ -f "$SRC/turbo.json" ]; then
     rsync -a "$SRC/turbo.json" "$NS/"
   fi
+  if [ "$(uname -s)" = Darwin ] && [ -f "$NS/packages/os-abstraction/native/macos-wifiscan/main.swift" ]; then
+    echo "[netscanner-ctl] macOS Wi‑Fi scan uses CoreWLAN via swift (Location Services may be required)"
+  fi
   echo "[netscanner-ctl] pnpm install"
   (cd "$NS" && CI=1 pnpm install --prod=false --force)
   echo "[netscanner-ctl] build static dashboard"

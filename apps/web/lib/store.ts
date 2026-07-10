@@ -15,9 +15,11 @@ export interface AlertItem {
 }
 
 const PRESENCE_CHANGE = /^came online$|^went offline$/;
+const IP_CHANGE = /^ip: /;
 
-function isPresenceOnlyChange(changes: string[]): boolean {
-  return changes.length > 0 && changes.every((c) => PRESENCE_CHANGE.test(c));
+/** Changes that should not surface in the alerts bell (still on device timeline). */
+function alertableChanges(changes: string[]): string[] {
+  return changes.filter((c) => !PRESENCE_CHANGE.test(c) && !IP_CHANGE.test(c));
 }
 
 interface StoreState {
@@ -25,6 +27,7 @@ interface StoreState {
   scan: ScanSession | null;
   alerts: AlertItem[];
   connected: boolean;
+  bootstrapping: boolean;
   capabilities: { nmap: boolean; elevated: boolean; nmapOffReason?: 'disabled-by-config' | 'not-in-path' } | null;
   selectedId: string | null;
   bootstrap: () => Promise<void>;
@@ -42,10 +45,12 @@ export const useStore = create<StoreState>((set, get) => ({
   scan: null,
   alerts: [],
   connected: false,
+  bootstrapping: true,
   capabilities: null,
   selectedId: null,
 
   bootstrap: async () => {
+    set({ bootstrapping: true });
     try {
       const [{ devices }, { scan }, health] = await Promise.all([
         api.listDevices(),
@@ -59,6 +64,8 @@ export const useStore = create<StoreState>((set, get) => ({
       });
     } catch {
       /* agent may be restarting */
+    } finally {
+      set({ bootstrapping: false });
     }
   },
 
@@ -133,14 +140,17 @@ function handleEvent(
       break;
     case 'device.changed':
       set((s) => ({ devices: withDevice(s.devices, event.payload.device) }));
-      if (!isPresenceOnlyChange(event.payload.changes)) {
-        pushAlert(set, {
-          id: `${event.payload.device.id}-chg-${Date.now()}`,
-          kind: 'changed',
-          message: `${event.payload.device.ip} changed: ${event.payload.changes.join('; ')}`,
-          deviceId: event.payload.device.id,
-          at: new Date().toISOString(),
-        });
+      {
+        const notable = alertableChanges(event.payload.changes);
+        if (notable.length) {
+          pushAlert(set, {
+            id: `${event.payload.device.id}-chg-${Date.now()}`,
+            kind: 'changed',
+            message: `${event.payload.device.ip} changed: ${notable.join('; ')}`,
+            deviceId: event.payload.device.id,
+            at: new Date().toISOString(),
+          });
+        }
       }
       break;
     case 'device.offline': {

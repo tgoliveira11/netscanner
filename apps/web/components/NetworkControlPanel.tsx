@@ -1,55 +1,42 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import type { ControlBootstrap, ControlVerifyResult, PolicyAuditEntry } from '@netscanner/contracts';
-import { api, type ParentalScheduleRow } from '../lib/api';
+import { useState } from 'react';
+import type { ControlVerifyResult } from '@netscanner/contracts';
+import { api } from '../lib/api';
+import { useBackgroundDataStore } from '../lib/background-data-store';
 import { useStore } from '../lib/store';
+import { LoadingSpinner } from './LoadingSpinner';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export function NetworkControlPanel() {
   const deviceMap = useStore((s) => s.devices);
   const devices = Object.values(deviceMap);
-  const [boot, setBoot] = useState<ControlBootstrap | null>(null);
+  const boot = useBackgroundDataStore((s) => s.controlBoot);
+  const audit = useBackgroundDataStore((s) => s.controlAudit);
+  const schedules = useBackgroundDataStore((s) => s.controlSchedules);
+  const bootLoading = useBackgroundDataStore((s) => s.controlBootLoading);
+  const auditLoading = useBackgroundDataStore((s) => s.controlAuditLoading);
+  const schedulesLoading = useBackgroundDataStore((s) => s.controlSchedulesLoading);
+  const error = useBackgroundDataStore((s) => s.controlError);
+  const refresh = useBackgroundDataStore((s) => s.refreshControl);
   const [verify, setVerify] = useState<ControlVerifyResult | null>(null);
-  const [audit, setAudit] = useState<PolicyAuditEntry[]>([]);
-  const [schedules, setSchedules] = useState<ParentalScheduleRow[]>([]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [name, setName] = useState('Kids bedtime');
   const [deviceId, setDeviceId] = useState('');
   const [weekdays, setWeekdays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
   const [startTime, setStartTime] = useState('22:00');
   const [endTime, setEndTime] = useState('07:00');
 
-  const refresh = useCallback(async () => {
-    try {
-      const [b, a, p] = await Promise.all([
-        api.controlBootstrap(),
-        api.controlAudit(30),
-        api.controlParentalList(),
-      ]);
-      setBoot(b);
-      setAudit(a.entries);
-      setSchedules(p.schedules);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
   const runVerify = async () => {
     setBusy(true);
     try {
       setVerify(await api.controlVerify());
-      await refresh();
-      setError(null);
+      await refresh({ silent: true });
+      setActionError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -58,10 +45,11 @@ export function NetworkControlPanel() {
   const bootstrap = async () => {
     setBusy(true);
     try {
-      setBoot(await api.controlBootstrapApply());
+      await api.controlBootstrapApply();
       await refresh();
+      setActionError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -79,9 +67,10 @@ export function NetworkControlPanel() {
         endTime,
         enabled: true,
       });
-      await refresh();
+      await refresh({ silent: true });
+      setActionError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -104,8 +93,11 @@ export function NetworkControlPanel() {
           </button>
         </div>
       </div>
-      {error && <p className="text-xs text-bad">{error}</p>}
-      {boot && (
+      {(error || actionError) && <p className="text-xs text-bad">{actionError ?? error}</p>}
+      {bootLoading && !boot ? (
+        <LoadingSpinner label="Loading control status…" className="py-4" />
+      ) : (
+        boot && (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-lg border border-edge bg-panelup px-3 py-2 text-xs">
             <div className="text-muted">Ready</div>
@@ -118,6 +110,7 @@ export function NetworkControlPanel() {
             </div>
           ))}
         </div>
+        )
       )}
       {boot?.message && <p className="text-xs text-muted">{boot.message}</p>}
 
@@ -207,7 +200,10 @@ export function NetworkControlPanel() {
         <button type="button" disabled={busy || !deviceId} onClick={() => void createSchedule()} className="btn btn-primary text-xs">
           Create pfSense schedule
         </button>
-        {schedules.length > 0 && (
+        {schedulesLoading && schedules.length === 0 ? (
+          <LoadingSpinner label="Loading schedules…" className="py-2" />
+        ) : (
+          schedules.length > 0 && (
           <ul className="space-y-1 text-xs text-slate-300">
             {schedules.map((s) => (
               <li key={s.id}>
@@ -215,10 +211,14 @@ export function NetworkControlPanel() {
               </li>
             ))}
           </ul>
+          )
         )}
       </div>
 
-      {audit.length > 0 && (
+      {auditLoading && audit.length === 0 ? (
+        <LoadingSpinner label="Loading policy audit…" className="py-4" />
+      ) : (
+        audit.length > 0 && (
         <div className="card p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase text-muted">Policy audit</h3>
           <ul className="max-h-40 space-y-1 overflow-auto text-xs text-slate-300">
@@ -230,6 +230,7 @@ export function NetworkControlPanel() {
             ))}
           </ul>
         </div>
+        )
       )}
     </section>
   );

@@ -52,12 +52,23 @@ describe('mergePfSenseLeases', () => {
     expect(merged[0]?.interface).toBe('VLAN10');
   });
 
-  it('adds arp-only hosts', () => {
-    const merged = mergePfSenseLeases(
-      [],
-      [normalizePfSenseArpLease({ ip: '10.0.3.5', mac: '00:11:22:33:44:55' })!],
-    );
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.ip).toBe('10.0.3.5');
+  it('dhcp idle wins over arp when merged', () => {
+    const dhcp = [
+      {
+        ip: '10.0.1.10',
+        mac: 'aa:bb:cc:dd:ee:ff',
+        hostname: 'iphone',
+        interface: 'VLAN10',
+        description: null,
+        online: false,
+      },
+    ];
+    const arp = [normalizePfSenseArpLease({ ip: '10.0.1.10', mac: 'aa:bb:cc:dd:ee:ff' })!];
+    const merged = mergePfSenseLeases(dhcp, arp);
+    expect(merged[0]?.online).toBe(false);
+  });
+
+  it('defaults missing dhcp state to offline', () => {
+    expect(normalizePfSenseLease({ ip: '10.0.0.3', mac: '00:11:22:33:44:66' })?.online).toBe(false);
   });
 });

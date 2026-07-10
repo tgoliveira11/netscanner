@@ -1,10 +1,22 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { mergeRouterScrapeTargets } from '@netscanner/config';
-import { probeOpenWrtWireless } from '@netscanner/discovery';
+import {
+  CompalMeshRequestSchema,
+  CompalRebootRequestSchema,
+  type CompalStreamEvent,
+} from '@netscanner/contracts';
+import {
+  probeCompalAdmin,
+  probeOpenWrtWireless,
+  rebootCompalTarget,
+  resolvePfSenseTelemetry,
+  setCompalMeshForTarget,
+  type OpenWrtScrapeTarget,
+} from '@netscanner/discovery';
 import type { Container } from '../container.js';
 import { tailAgentLogFile } from '../infrastructure/log-ring-buffer.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 /** Admin diagnostics and runtime configuration (no auth yet — localhost only). */
 export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
@@ -45,6 +57,9 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
         dhcpPersisted: persistedDhcp,
         passiveSignals: persistedPassive,
         activeScan: active ? { id: active.id, status: active.status, cidr: active.cidr } : null,
+        wanSpeedTestConfigured: Boolean(
+          c.config.PFSENSE_URL?.trim() && c.config.PFSENSE_SSH_PASSWORD?.trim(),
+        ),
       },
       inventory: { deviceCount },
       scans: { latest: latest ?? null, active: active ?? null },
@@ -88,7 +103,7 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
         routerScrapeUser: row.routerScrapeUser,
         routerScrapePassword: row.routerScrapePassword,
       })),
-    );
+    ).filter((t) => t.kind !== 'compal');
     if (!targets.length) {
       return { configured: false, routers: [] };
     }
@@ -107,6 +122,83 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
       transmitting: routers.filter((r) => r.ok && r.ssids.some((s) => s.up && s.ssid)).length,
       routers,
     };
+  });
+
+  /** Compal AP status (mesh toggle, SSIDs) for kind=compal scrape targets. */
+  app.get('/api/admin/compal', async () => {
+    const targets = await listCompalTargets(c);
+    if (!targets.length) return { configured: false, devices: [] };
+    const devices = await probeCompalAdmin(targets, c.logger);
+    return { configured: true, devices };
+  });
+
+  /** pfSense dashboard: system, gateways, VPN, egress inference. */
+  app.get('/api/admin/pfsense/gateways', async (request) => {
+    if (!c.leaseSource) return { configured: false };
+    const force = String((request.query as { refresh?: string }).refresh ?? '') === '1';
+    let telemetry = resolvePfSenseTelemetry(c.leaseSource);
+    // Serve cache when fresh enough; full refresh is ~30s and blocks the UI / WAN speed button.
+    const ageMs = telemetry?.fetchedAt ? Date.now() - Date.parse(telemetry.fetchedAt) : Number.POSITIVE_INFINITY;
+    const stale = !Number.isFinite(ageMs) || ageMs > 45_000;
+    if (force || !telemetry || stale) {
+      try {
+        await c.leaseSource.getLeases();
+      } catch {
+        /* return last cached snapshot when refresh fails */
+      }
+      telemetry = resolvePfSenseTelemetry(c.leaseSource);
+    }
+    if (!telemetry) return { configured: false };
+    return {
+      configured: true,
+      fetchedAt: telemetry.fetchedAt,
+      version: telemetry.version,
+      hostname: telemetry.hostname,
+      system: telemetry.system,
+      defaultGateway: telemetry.defaultGateway,
+      gatewayGroups: telemetry.gatewayGroups,
+      gatewayGroupInsights: telemetry.gatewayGroupInsights,
+      gateways: telemetry.gateways,
+      interfaces: telemetry.interfaces,
+      vpnClients: telemetry.vpnClients,
+      egress: telemetry.egress,
+      stateCount: telemetry.stateCount,
+    };
+  });
+
+  app.post('/api/admin/compal/mesh', async (request, reply) => {
+    const parsed = CompalMeshRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    const target = findCompalTarget(await listCompalTargets(c), parsed.data.baseUrl);
+    if (!target) return reply.status(404).send({ error: 'Compal target not found' });
+    return streamCompalAction(reply, target.baseUrl, async (emit) => {
+      const result = await setCompalMeshForTarget(target, parsed.data.enabled, c.logger, emit);
+      return {
+        type: 'done' as const,
+        ok: true,
+        url: target.baseUrl,
+        meshEnabled: result.meshEnabled,
+        uptimeSec: result.uptimeSec,
+        message: parsed.data.enabled ? 'Mesh enabled' : 'Mesh disabled',
+      };
+    });
+  });
+
+  app.post('/api/admin/compal/reboot', async (request, reply) => {
+    const parsed = CompalRebootRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    const target = findCompalTarget(await listCompalTargets(c), parsed.data.baseUrl);
+    if (!target) return reply.status(404).send({ error: 'Compal target not found' });
+    return streamCompalAction(reply, target.baseUrl, async (emit) => {
+      const result = await rebootCompalTarget(target, c.logger, emit);
+      return {
+        type: 'done' as const,
+        ok: true,
+        url: target.baseUrl,
+        uptimeSec: result.uptimeSec,
+        message: 'Reboot concluído — AP voltou online',
+      };
+    });
   });
 
   app.patch('/api/admin/config', async (request, reply) => {
@@ -133,4 +225,57 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
     await reply.send({ ok: true, restarting: true });
     setTimeout(() => process.exit(0), 500);
   });
+}
+
+async function listCompalTargets(c: Container): Promise<OpenWrtScrapeTarget[]> {
+  const creds = await c.repo.listRouterScrapeCredentials(c.activeSite.getActiveSiteId() ?? '00000000-0000-4000-8000-000000000001');
+  return mergeRouterScrapeTargets(
+    c.config,
+    creds.map((row) => ({
+      ip: row.ip,
+      deviceType: row.deviceType,
+      brand: row.brand,
+      hostname: row.hostname,
+      routerScrapeUser: row.routerScrapeUser,
+      routerScrapePassword: row.routerScrapePassword,
+    })),
+  )
+    .filter((t) => t.kind === 'compal')
+    .map((t) => ({
+      baseUrl: t.baseUrl,
+      kind: 'compal' as const,
+      username: t.username,
+      password: t.password,
+    }));
+}
+
+function findCompalTarget(targets: OpenWrtScrapeTarget[], baseUrl: string): OpenWrtScrapeTarget | undefined {
+  const norm = baseUrl.replace(/\/+$/, '');
+  return targets.find((t) => t.baseUrl.replace(/\/+$/, '') === norm);
+}
+
+async function streamCompalAction(
+  reply: FastifyReply,
+  url: string,
+  run: (emit: (step: { level: 'info' | 'warn' | 'success' | 'error'; message: string; at: string }) => void) => Promise<Extract<CompalStreamEvent, { type: 'done' }>>,
+): Promise<void> {
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  const write = (event: CompalStreamEvent) => {
+    reply.raw.write(`${JSON.stringify(event)}\n`);
+  };
+  try {
+    const done = await run((step) => write({ type: 'step', ...step }));
+    write(done);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    write({ type: 'done', ok: false, url, message });
+    reply.raw.statusCode = 502;
+  } finally {
+    reply.raw.end();
+  }
 }

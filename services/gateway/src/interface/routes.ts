@@ -6,6 +6,7 @@ import {
   ExportFormat,
   SpeedTestListQuerySchema,
   SpeedTestReportQuerySchema,
+  SpeedTestRunRequestSchema,
   type HealthResponse,
 } from '@netscanner/contracts';
 import type { Container } from '../container.js';
@@ -17,7 +18,7 @@ import { registerSiteRoutes } from './site-routes.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { registerControlRoutes } from './control-routes.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 function hostFromUrl(baseUrl: string): string {
   if (!baseUrl) return '';
@@ -138,7 +139,10 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
       activeScan: active ? { id: active.id, status: active.status, cidr: active.cidr } : null,
       speedTestEnabled: c.config.SPEED_TEST_ENABLED,
       speedTestIntervalMs: c.config.SPEED_TEST_INTERVAL_MS,
-      speedTestRunning: c.runSpeedTest.isRunning(),
+      speedTestRunning: c.runSpeedTest.isRunning() || c.runWanSpeedTests.isRunning(),
+      wanSpeedTestConfigured: Boolean(
+        c.config.PFSENSE_URL?.trim() && c.config.PFSENSE_SSH_PASSWORD?.trim(),
+      ),
       activeSite: c.activeSite.state(),
     };
   });
@@ -270,21 +274,32 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
     const samples = await c.listSpeedTests.execute({
       limit: parsed.data.limit,
       since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+      testKind: parsed.data.testKind,
+      wanGateway: parsed.data.wanGateway,
     });
     return { samples };
   });
 
   app.get('/api/speed-tests/report', async (request) => {
     const parsed = SpeedTestReportQuerySchema.safeParse(request.query ?? {});
-    const q = parsed.success ? parsed.data : { days: 30, limit: 100 };
-    return c.buildSpeedTestReport.execute(q.days, q.limit);
+    const q = parsed.success ? parsed.data : { days: 90, limit: 2000 };
+    return c.buildSpeedTestReport.execute(q.days, q.limit, q.testKind, q.wanGateway);
   });
 
-  app.post('/api/speed-tests/run', async (_request, reply) => {
-    if (c.runSpeedTest.isRunning()) {
+  app.post('/api/speed-tests/run', async (request, reply) => {
+    const parsed = SpeedTestRunRequestSchema.safeParse(request.body ?? {});
+    const target = parsed.success ? parsed.data.target : 'agent';
+    if (c.runSpeedTest.isRunning() || c.runWanSpeedTests.isRunning()) {
       return reply.status(409).send({ error: 'speed test already running' });
     }
+    if (c.sessions.activeScan()) {
+      return reply.status(409).send({ error: 'scan in progress — try again when the scan finishes' });
+    }
     try {
+      if (target === 'wan-all') {
+        const results = await c.runWanSpeedTests.execute('manual');
+        return { results };
+      }
       const result = await c.runSpeedTest.execute('manual');
       return { result };
     } catch (error) {

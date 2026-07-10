@@ -118,6 +118,8 @@ export const EnvSchema = z.object({
   SPEED_TEST_DOWNLOAD_BYTES: z.coerce.number().default(10_000_000),
   SPEED_TEST_UPLOAD_BYTES: z.coerce.number().default(5_000_000),
   SPEED_TEST_URL: z.string().default('https://speed.cloudflare.com'),
+  /** Delete speed test rows older than this (default 90 days). */
+  SPEED_TEST_RETENTION_DAYS: z.coerce.number().min(7).max(730).default(90),
   /** Auto-create a site when fingerprint does not match any known site. */
   SITE_AUTO_CREATE: envBool(true),
   /** Minimum score (0–1) to accept an automatic site match. */

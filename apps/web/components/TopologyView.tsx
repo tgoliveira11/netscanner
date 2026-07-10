@@ -11,6 +11,7 @@ import {
   type NodePos,
 } from '../lib/topology-layout';
 import { buildRenderLayout, useTopologyStore, type ViewTransform } from '../lib/topology-store';
+import { LoadingSpinner } from './LoadingSpinner';
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 2.5;
@@ -92,6 +93,7 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
   const topology = useTopologyStore((s) => s.topology);
   const layoutCache = useTopologyStore((s) => s.layout);
   const loading = useTopologyStore((s) => s.loading);
+  const refreshing = useTopologyStore((s) => s.refreshing);
   const view = useTopologyStore((s) => s.view);
   const viewInitialized = useTopologyStore((s) => s.viewInitialized);
   const setView = useTopologyStore((s) => s.setView);
@@ -351,9 +353,11 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
             </div>
           )}
           <span className="text-xs text-muted">
-            {loading
-              ? 'Updating…'
-              : `${nodes.length} nodes · ${wiredCount} wired · ${wifiCount} wifi`}
+            {loading && !topology
+              ? 'Loading…'
+              : refreshing
+                ? 'Updating…'
+                : `${nodes.length} nodes · ${wiredCount} wired · ${wifiCount} wifi`}
           </span>
         </div>
       </div>
@@ -396,11 +400,13 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
         onDragStart={(e) => e.preventDefault()}
       >
         {nodes.length === 0 ? (
-          <p className="py-16 text-center text-sm text-muted">
-            {loading && !topology
-              ? 'Loading topology…'
-              : 'No topology yet — devices appear from pfSense leases and inventory; no scan required.'}
-          </p>
+          loading && !topology ? (
+            <LoadingSpinner label="Loading topology…" />
+          ) : (
+            <p className="py-16 text-center text-sm text-muted">
+              No topology yet — devices appear from pfSense leases and inventory; no scan required.
+            </p>
+          )
         ) : (
           <div
             className="topology-canvas select-none"

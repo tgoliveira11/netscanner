@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { LoadingBlock } from './LoadingSpinner';
 import { useStore } from '../lib/store';
 
 type Tab = 'traffic' | 'dns' | 'log';
@@ -239,6 +240,11 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
       )}
 
       <div className="min-h-0 flex-1 overflow-auto">
+        <LoadingBlock
+          loading={loading && edges.length === 0 && dnsLog.length === 0}
+          label="Loading relations…"
+          minHeight="12rem"
+        >
         {tab === 'traffic' && filteredTraffic.length > 0 && (
           <table className="w-full text-left text-xs">
             <thead className="sticky top-0 z-10 bg-panel text-[10px] uppercase tracking-wide text-muted">
@@ -365,6 +371,7 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
             {q ? 'No matches for this filter.' : emptyMessage}
           </p>
         )}
+        </LoadingBlock>
       </div>
     </section>
   );

@@ -5,7 +5,10 @@ import {
   jsEncryptCacheKey,
   parseCompalWirelessNetworkIds,
   parseCompalWirelessStatusJson,
+  parseCompalWirelessStatusBody,
 } from './compal-luci-crypto.js';
+import { buildCompalMeshForm, parseCompalMeshEnabled } from './compal-luci-forms.js';
+import { parseCompalSystemStatus, type CompalSystemStatus } from './compal-status.js';
 
 export type LuciAuthMode = 'plain' | 'compal-rsa';
 
@@ -35,6 +38,15 @@ export interface LuciWifiClient {
   signal?: number | null;
 }
 
+export interface LuciWifiNeighbor {
+  ssid: string;
+  bssid?: string;
+  channel?: number;
+  rssi?: number;
+  security?: string;
+  device: string;
+}
+
 export interface LuciSession {
   cookie: string;
   sessionId: string;
@@ -52,11 +64,33 @@ const jsEncryptScriptCache = new Map<string, string>();
 
 /** LuCI form login + ubus JSON-RPC (OpenWrt 23.x) or Compal RSA + wireless_status. */
 export class LuciClient {
+  private sessionCache: { at: number; value: LuciSession } | null = null;
+  private static readonly sessionTtlMs = 45_000;
+
   constructor(private readonly config: LuciClientConfig) {}
 
+  clearSession(): void {
+    this.sessionCache = null;
+  }
+
   async session(): Promise<LuciSession> {
-    if (this.config.auth === 'compal-rsa') return this.sessionCompal();
-    return this.sessionPlain();
+    if (
+      this.sessionCache &&
+      Date.now() - this.sessionCache.at < LuciClient.sessionTtlMs
+    ) {
+      return this.sessionCache.value;
+    }
+    try {
+      const value =
+        this.config.auth === 'compal-rsa'
+          ? await this.sessionCompal()
+          : await this.sessionPlain();
+      this.sessionCache = { at: Date.now(), value };
+      return value;
+    } catch (error) {
+      this.sessionCache = null;
+      throw error;
+    }
   }
 
   async ubusCall(
@@ -66,6 +100,7 @@ export class LuciClient {
     method: string,
     args: Record<string, unknown>,
     stok?: string,
+    timeoutMs = 12_000,
   ): Promise<unknown> {
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -77,6 +112,7 @@ export class LuciClient {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body,
+      timeoutMs,
     });
     if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
     return JSON.parse(res.body || '{}') as unknown;
@@ -107,12 +143,140 @@ export class LuciClient {
     return ssids;
   }
 
+  /** Active Wi‑Fi scan from the router/AP radio (OpenWrt iwinfo ubus). */
+  async scanWifiNeighbors(): Promise<LuciWifiNeighbor[]> {
+    const { cookie, sessionId, stok } = await this.session();
+    let devices = await this.listIwinfoDevices(cookie, sessionId, stok);
+    if (!devices.length) {
+      const ssids = await this.getWirelessSsids();
+      devices = [...new Set(ssids.map((s) => s.ifname).filter(Boolean))];
+    }
+    const picked = pickScanDevices(devices);
+    const out: LuciWifiNeighbor[] = [];
+    const seen = new Set<string>();
+    for (const device of picked) {
+      try {
+        const payload = await this.ubusCall(cookie, sessionId, 'iwinfo', 'scan', { device }, stok, 30_000);
+        const body = this.ubusResult(payload) as { results?: unknown[] } | unknown[] | null;
+        const rows = Array.isArray(body) ? body : (body?.results ?? []);
+        for (const row of rows) {
+          const parsed = parseIwinfoScanRow(row, device);
+          if (!parsed) continue;
+          const key = parsed.bssid ?? `${parsed.ssid}|${parsed.channel}|${parsed.device}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(parsed);
+        }
+      } catch {
+        /* device may not support scan */
+      }
+    }
+    return out;
+  }
+
+  private async listIwinfoDevices(cookie: string, sessionId: string, stok?: string): Promise<string[]> {
+    try {
+      const payload = await this.ubusCall(cookie, sessionId, 'iwinfo', 'devices', {}, stok);
+      const result = this.ubusResult(payload);
+      if (Array.isArray(result)) return result.filter((d): d is string => typeof d === 'string');
+      if (result && typeof result === 'object') return Object.keys(result as Record<string, unknown>);
+    } catch {
+      /* iwinfo not exposed */
+    }
+    return [];
+  }
+
   ubusResult(payload: unknown): unknown {
     if (!payload || typeof payload !== 'object') return null;
     const result = (payload as { result?: unknown[] }).result;
     if (!Array.isArray(result) || result.length < 2) return null;
     if (result[0] !== 0) return null;
     return result[1];
+  }
+
+  /** Authenticated GET for Compal/OpenWrt LuCI admin pages. */
+  async fetchAdminPage(path: string): Promise<string> {
+    const { cookie, stok } = await this.session();
+    const res = await this.request(this.luciUrl(path, stok), {
+      method: 'GET',
+      headers: { Cookie: cookie },
+      timeoutMs: 30_000,
+    });
+    if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
+    return res.body;
+  }
+
+  /** Authenticated POST for LuCI CBI forms (Compal clarostyle). */
+  async postAdminPage(path: string, fields: Record<string, string>): Promise<string> {
+    const { cookie, stok } = await this.session();
+    const body = new URLSearchParams(fields).toString();
+    const res = await this.request(this.luciUrl(path, stok), {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      timeoutMs: 45_000,
+    });
+    if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
+    return res.body;
+  }
+
+  /** Read Compal mesh Wi‑Fi toggle (null when page/field missing or AP busy). */
+  async getCompalMeshEnabled(): Promise<boolean | null> {
+    if (this.config.auth !== 'compal-rsa') return null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const html = await this.fetchAdminPage('/admin/network/mesh_wifi');
+        const parsed = parseCompalMeshEnabled(html);
+        if (parsed != null) return parsed;
+      } catch {
+        this.clearSession();
+      }
+      if (attempt < 2) await sleep(2000);
+    }
+    return null;
+  }
+
+  /** Enable/disable Compal mesh Wi‑Fi (LuCI CBI form). */
+  async setCompalMeshEnabled(enabled: boolean): Promise<void> {
+    if (this.config.auth !== 'compal-rsa') throw new Error('Compal LuCI only');
+    const html = await this.fetchAdminPage('/admin/network/mesh_wifi');
+    const fields = buildCompalMeshForm(html, enabled);
+    await this.postAdminPage('/admin/network/mesh_wifi', fields);
+  }
+
+  /** Reboot Compal device — LuCI uses GET `/admin/system/reboot?reboot=1` (link on reboot page). */
+  async rebootCompal(): Promise<void> {
+    if (this.config.auth !== 'compal-rsa') throw new Error('Compal LuCI only');
+    const { cookie, stok } = await this.session();
+    const url = this.luciUrl('/admin/system/reboot', stok);
+    url.searchParams.set('reboot', '1');
+    try {
+      await this.request(url, {
+        method: 'GET',
+        headers: { Cookie: cookie },
+        timeoutMs: 15_000,
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // Connection drop while the AP reboots is expected.
+      if (/ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|socket hang up|aborted/i.test(msg)) return;
+      throw error;
+    }
+  }
+
+  /** Compal status overview JSON (`/admin/status?status=1`) — uptime, load, memory. */
+  async getCompalSystemStatus(): Promise<CompalSystemStatus | null> {
+    if (this.config.auth !== 'compal-rsa') return null;
+    const { cookie, stok } = await this.session();
+    const url = this.luciUrl('/admin/status', stok);
+    url.searchParams.set('status', '1');
+    const res = await this.request(url, {
+      method: 'GET',
+      headers: { Cookie: cookie },
+      timeoutMs: 15_000,
+    });
+    if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
+    return parseCompalSystemStatus(res.body);
   }
 
   private async sessionPlain(): Promise<LuciSession> {
@@ -167,28 +331,40 @@ export class LuciClient {
   }
 
   private async getWirelessSsidsCompal(): Promise<LuciWirelessSsid[]> {
+    return this.fetchCompalWirelessSsidsWithRetry();
+  }
+
+  private async fetchCompalWirelessSsidsWithRetry(attempt = 0): Promise<LuciWirelessSsid[]> {
+    try {
+      return await this.fetchCompalWirelessSsidsOnce();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const retryable =
+        /invalid JSON|HTTP 40[13]|login|sysauth|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg);
+      if (attempt < 1 && retryable) {
+        await sleep(1500);
+        return this.fetchCompalWirelessSsidsWithRetry(attempt + 1);
+      }
+      throw error;
+    }
+  }
+
+  private async fetchCompalWirelessSsidsOnce(): Promise<LuciWirelessSsid[]> {
     const { cookie, stok } = await this.session();
     if (!stok) throw new Error('Compal LuCI stok missing');
 
     const wirelessPage = await this.request(this.luciUrl('/admin/network/wireless', stok), {
       method: 'GET',
       headers: { Cookie: cookie },
+      timeoutMs: 25_000,
     });
     if (wirelessPage.status >= 400) throw new Error(`HTTP ${wirelessPage.status}`);
 
     const networkIds = parseCompalWirelessNetworkIds(wirelessPage.body);
     if (!networkIds.length) return [];
 
-    const status = await this.request(
-      this.luciUrl(`/admin/network/wireless_status/${networkIds.join(',')}`, stok),
-      { method: 'GET', headers: { Cookie: cookie } },
-    );
-    if (status.status >= 400) throw new Error(`HTTP ${status.status}`);
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(status.body);
-    } catch {
+    const parsed = await this.fetchCompalWirelessStatusJson(networkIds, cookie, stok);
+    if (parsed == null) {
       throw new Error('Compal wireless_status returned invalid JSON');
     }
 
@@ -205,6 +381,39 @@ export class LuciClient {
         signal: info.signal ?? null,
       })),
     }));
+  }
+
+  private async fetchCompalWirelessStatusJson(
+    networkIds: string[],
+    cookie: string,
+    stok: string,
+  ): Promise<unknown | null> {
+    const joined = networkIds.join(',');
+    const batch = await this.request(
+      this.luciUrl(`/admin/network/wireless_status/${joined}`, stok),
+      { method: 'GET', headers: { Cookie: cookie }, timeoutMs: 30_000 },
+    );
+    if (batch.status < 400) {
+      const parsed = parseCompalWirelessStatusBody(batch.body);
+      if (parsed != null) return parsed;
+    }
+
+    const merged: unknown[] = [];
+    for (const id of networkIds) {
+      try {
+        const single = await this.request(
+          this.luciUrl(`/admin/network/wireless_status/${id}`, stok),
+          { method: 'GET', headers: { Cookie: cookie }, timeoutMs: 20_000 },
+        );
+        if (single.status >= 400) continue;
+        const parsed = parseCompalWirelessStatusBody(single.body);
+        if (Array.isArray(parsed)) merged.push(...parsed);
+        else if (parsed && typeof parsed === 'object') merged.push(parsed);
+      } catch {
+        /* skip radio */
+      }
+    }
+    return merged.length ? merged : null;
   }
 
   private async loadJsEncryptScript(): Promise<string> {
@@ -250,7 +459,10 @@ export class LuciClient {
     return list.map((c) => c.split(';')[0]).filter(Boolean).join('; ');
   }
 
-  private request(url: URL, opts: { method: string; headers?: Record<string, string>; body?: string }): Promise<HttpResponse> {
+  private request(
+    url: URL,
+    opts: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number },
+  ): Promise<HttpResponse> {
     const isHttps = url.protocol === 'https:';
     const requester = isHttps ? httpsRequest : httpRequest;
     const headers = { ...(opts.headers ?? {}) };
@@ -262,7 +474,7 @@ export class LuciClient {
         {
           method: opts.method,
           headers,
-          timeout: 12000,
+          timeout: opts.timeoutMs ?? 12_000,
           ...(isHttps ? { rejectUnauthorized: !this.config.insecureTls } : {}),
         },
         (res) => {
@@ -282,4 +494,55 @@ export class LuciClient {
       req.end();
     });
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function pickScanDevices(devices: string[]): string[] {
+  const unique = [...new Set(devices.filter(Boolean))];
+  if (unique.length <= 2) return unique;
+  const prefer = unique.filter((d) => /^wlan\d|^phy\d/i.test(d));
+  return (prefer.length ? prefer : unique).slice(0, 2);
+}
+
+function parseIwinfoScanRow(row: unknown, device: string): LuciWifiNeighbor | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const ssid = String(r.ssid ?? r.SSID ?? '').trim();
+  if (!ssid) return null;
+  const bssid = r.bssid != null ? String(r.bssid) : r.BSSID != null ? String(r.BSSID) : undefined;
+  const channelRaw = r.channel ?? r.Channel;
+  const channel =
+    typeof channelRaw === 'number'
+      ? channelRaw
+      : typeof channelRaw === 'string'
+        ? Number(channelRaw.match(/(\d+)/)?.[1])
+        : undefined;
+  const signalRaw = r.signal ?? r.Signal ?? r.rssi;
+  const rssi =
+    typeof signalRaw === 'number'
+      ? signalRaw
+      : typeof signalRaw === 'string'
+        ? Number(signalRaw.match(/(-?\d+)/)?.[1])
+        : undefined;
+  const enc = r.encryption ?? r.Encryption;
+  let security: string | undefined;
+  if (typeof enc === 'string') security = enc;
+  else if (enc && typeof enc === 'object') {
+    const e = enc as Record<string, unknown>;
+    security = [e.enabled, e.wpa, e.authentication, e.ciphers]
+      .filter((x) => x != null && x !== false && x !== '')
+      .map(String)
+      .join(' ') || undefined;
+  }
+  return {
+    ssid,
+    bssid,
+    channel: Number.isFinite(channel) ? channel : undefined,
+    rssi: Number.isFinite(rssi) ? rssi : undefined,
+    security,
+    device,
+  };
 }

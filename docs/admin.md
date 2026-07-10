@@ -40,7 +40,7 @@ When `PFSENSE_CONTROL_ENABLED=true`, NetScanner can write to pfSense via REST AP
 Manual pfSense setup guide:
 
 1. **Firewall → Aliases** — create host aliases (or use **Bootstrap aliases**).
-2. **Firewall → Rules → Floating** — block rules for BLOCK/PAUSE/AUTOBLOCK; pass rules for LIMIT with **Direction** `in` / `out` and matching pipes.
+2. **Firewall → Rules → Floating** — block rules for BLOCK/PAUSE/AUTOBLOCK with **Quick** checked (required — without Quick, interface pass rules run first and block is ignored); pass rules for LIMIT with **Direction** `in` / `out` and matching pipes.
 3. **Firewall → Traffic Shaper → Limiters** — e.g. `NS_LIMIT_IN`, `NS_LIMIT_OUT`.
 4. **Apply Changes**, then click **Verify rules** in Admin.
 

@@ -2,9 +2,12 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import {
   BandwidthLimitRequestSchema,
   BlockRequestSchema,
+  DestBlockRequestSchema,
   DhcpReservationRequestSchema,
+  DnsBlockRequestSchema,
   ParentalScheduleRequestSchema,
   PauseRequestSchema,
+  RoutePolicyRequestSchema,
 } from '@netscanner/contracts';
 import type { Container } from '../container.js';
 import { authorizeControl } from './control-auth.js';
@@ -116,5 +119,103 @@ export function registerControlRoutes(app: FastifyInstance, c: Container): void 
     const parsed = ParentalScheduleRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
     return { schedule: await c.networkControl.createParentalSchedule(parsed.data) };
+  });
+
+  app.post('/api/control/dns-block', async (request, reply) => {
+    if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
+    if (!c.networkControl.enabled()) return reply.status(503).send({ error: 'control disabled' });
+    const parsed = DnsBlockRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return {
+        entry: await c.networkControl.blockDns(
+          parsed.data.deviceId,
+          parsed.data.ip,
+          parsed.data.mac,
+          parsed.data.domain,
+        ),
+      };
+    } catch (error) {
+      return controlError(reply, error);
+    }
+  });
+
+  app.post('/api/control/dns-unblock', async (request, reply) => {
+    if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
+    if (!c.networkControl.enabled()) return reply.status(503).send({ error: 'control disabled' });
+    const parsed = DnsBlockRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return {
+        entry: await c.networkControl.unblockDns(
+          parsed.data.deviceId,
+          parsed.data.ip,
+          parsed.data.mac,
+          parsed.data.domain,
+        ),
+      };
+    } catch (error) {
+      return controlError(reply, error);
+    }
+  });
+
+  app.post('/api/control/dest-block', async (request, reply) => {
+    if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
+    if (!c.networkControl.enabled()) return reply.status(503).send({ error: 'control disabled' });
+    const parsed = DestBlockRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return {
+        entry: await c.networkControl.blockDest(
+          parsed.data.deviceId,
+          parsed.data.ip,
+          parsed.data.mac,
+          parsed.data.destination,
+        ),
+      };
+    } catch (error) {
+      return controlError(reply, error);
+    }
+  });
+
+  app.post('/api/control/dest-unblock', async (request, reply) => {
+    if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
+    if (!c.networkControl.enabled()) return reply.status(503).send({ error: 'control disabled' });
+    const parsed = DestBlockRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return {
+        entry: await c.networkControl.unblockDest(
+          parsed.data.deviceId,
+          parsed.data.ip,
+          parsed.data.mac,
+          parsed.data.destination,
+        ),
+      };
+    } catch (error) {
+      return controlError(reply, error);
+    }
+  });
+
+  app.post('/api/control/route', async (request, reply) => {
+    if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
+    if (!c.networkControl.enabled()) return reply.status(503).send({ error: 'control disabled' });
+    const parsed = RoutePolicyRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+    try {
+      return {
+        entry: await c.networkControl.setRoute(parsed.data.deviceId, parsed.data.ip, parsed.data.mac, {
+          gatewayName: parsed.data.gatewayName,
+          profile: parsed.data.profile,
+        }),
+      };
+    } catch (error) {
+      return controlError(reply, error);
+    }
+  });
+
+  app.get('/api/control/route-options', async (request, reply) => {
+    if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
+    return { options: c.networkControl.listRouteOptions() };
   });
 }

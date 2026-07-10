@@ -84,6 +84,7 @@ export const CONFIG_FIELDS: ConfigFieldMeta[] = [
   { key: 'SPEED_TEST_DOWNLOAD_BYTES', label: 'Speed test download bytes', description: 'Download payload size per test (default 10 MB).', type: 'number', group: 'Background', restartRequired: false },
   { key: 'SPEED_TEST_UPLOAD_BYTES', label: 'Speed test upload bytes', description: 'Upload payload size per test (default 5 MB).', type: 'number', group: 'Background', restartRequired: false },
   { key: 'SPEED_TEST_URL', label: 'Speed test URL', description: 'Base URL for Cloudflare speed endpoints.', type: 'string', group: 'Background', restartRequired: false },
+  { key: 'SPEED_TEST_RETENTION_DAYS', label: 'Speed test retention (days)', description: 'Keep speed test history for at least this many days (default 90).', type: 'number', group: 'Background', restartRequired: false },
   { key: 'FRITZBOX_URL', label: 'Fritz!Box URL', description: 'Base URL for Fritz!Box host list.', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'FRITZBOX_USER', label: 'Fritz!Box user', description: 'Fritz!Box login username.', type: 'string', group: 'Integrations', restartRequired: true },
   { key: 'FRITZBOX_PASSWORD', label: 'Fritz!Box password', description: 'Fritz!Box login password.', type: 'secret', group: 'Integrations', restartRequired: true },

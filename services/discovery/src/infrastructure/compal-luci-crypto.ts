@@ -78,6 +78,28 @@ export interface CompalWirelessStatusRow {
   assoclist?: Record<string, { signal?: number; inactive?: number }>;
 }
 
+/** Extract JSON from Compal wireless_status response (may be bare array or HTML-wrapped on reboot). */
+export function parseCompalWirelessStatusBody(body: string): unknown | null {
+  const trimmed = body.trim();
+  if (!trimmed) return null;
+  if (/luci_username|sysauth|login-form|cbi-map/i.test(trimmed) && !trimmed.startsWith('[')) return null;
+
+  const attempts = [trimmed];
+  const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
+  if (arrayMatch?.[0]) attempts.push(arrayMatch[0]);
+  const objectMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (objectMatch?.[0] && !arrayMatch) attempts.push(objectMatch[0]);
+
+  for (const candidate of attempts) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
 /** Map Compal `wireless_status` JSON array to normalized rows. */
 export function parseCompalWirelessStatusJson(raw: unknown): CompalWirelessStatusRow[] {
   if (!Array.isArray(raw)) return [];

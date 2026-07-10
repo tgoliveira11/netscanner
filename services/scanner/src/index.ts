@@ -6,6 +6,7 @@ export * from './infrastructure/traffic-monitor.js';
 export * from './infrastructure/pf-states-traffic.parser.js';
 export * from './domain/speed-test.js';
 export * from './infrastructure/cloudflare-speed-test.js';
+export * from './infrastructure/pfsense-ssh-speed-test.js';
 export * from './infrastructure/pf-rest-states.parser.js';
 export * from './infrastructure/pf-rest-traffic-source.js';
 export * from './infrastructure/pf-ssh-traffic-source.js';

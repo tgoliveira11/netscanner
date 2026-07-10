@@ -20,9 +20,15 @@ import type {
   ControlBootstrap,
   ControlVerifyResult,
   PolicyAuditEntry,
+  CompalAdminResponse,
+  CompalActionResponse,
+  CompalStreamEvent,
+  CompalDoneEvent,
   DhcpReservationRequest,
   BandwidthLimitRequest,
   ParentalScheduleRequest,
+  RoutePolicyRequest,
+  RouteOption,
 } from '@netscanner/contracts';
 
 /** Agent API base — same-origin on :4000 bundle; :4000 when Next dev runs on :3000. */
@@ -55,6 +61,54 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(apiUrl(path), init);
 }
 
+async function readNdjsonStream<T>(
+  res: Response,
+  onLine: (line: T) => void,
+): Promise<void> {
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('No response body');
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl = buf.indexOf('\n');
+    while (nl >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) onLine(JSON.parse(line) as T);
+      nl = buf.indexOf('\n');
+    }
+  }
+  const tail = buf.trim();
+  if (tail) onLine(JSON.parse(tail) as T);
+}
+
+async function compalActionStream(
+  path: string,
+  body: Record<string, unknown>,
+  onEvent: (event: CompalStreamEvent) => void,
+): Promise<CompalDoneEvent> {
+  let result: CompalDoneEvent | undefined;
+  const res = await apiFetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
+    body: JSON.stringify(body),
+  });
+  await readNdjsonStream<CompalStreamEvent>(res, (event) => {
+    onEvent(event);
+    if (event.type === 'done') result = event;
+  });
+  if (result === undefined) throw new Error('Compal action ended without result');
+  if (!result.ok) throw new Error(result.message ?? 'Compal action failed');
+  return result;
+}
+
 /** Restart agent; POST only acknowledges shutdown — always poll until /api/health responds. */
 async function agentRestart(): Promise<{ ok: boolean; restarting: boolean }> {
   try {
@@ -73,7 +127,7 @@ async function agentRestart(): Promise<{ ok: boolean; restarting: boolean }> {
       /* agent still starting */
     }
   }
-  throw new Error('Agent não respondeu após o restart (aguardou 45s). Use: sudo netscanner-ctl restart');
+  throw new Error('Agent did not respond after restart (waited 45s). Try: sudo netscanner-ctl restart');
 }
 
 export const api = {
@@ -136,6 +190,39 @@ export const api = {
 
   adminWireless: () => apiFetch('/api/admin/wireless').then((r) => json<AdminWirelessResponse>(r)),
 
+  adminCompal: () => apiFetch('/api/admin/compal').then((r) => json<CompalAdminResponse>(r)),
+
+  adminPfSenseGateways: () =>
+    apiFetch('/api/admin/pfsense/gateways').then((r) => json<PfSenseGatewaysResponse>(r)),
+
+  adminCompalMesh: (
+    baseUrl: string,
+    enabled: boolean,
+    onEvent?: (event: CompalStreamEvent) => void,
+  ): Promise<CompalActionResponse> =>
+    compalActionStream(
+      '/api/admin/compal/mesh',
+      { baseUrl, enabled },
+      onEvent ?? (() => undefined),
+    ).then((done) => ({
+      ok: done.ok,
+      url: done.url,
+      meshEnabled: done.meshEnabled,
+      message: done.message,
+    })),
+
+  adminCompalReboot: (
+    baseUrl: string,
+    onEvent?: (event: CompalStreamEvent) => void,
+  ): Promise<CompalActionResponse> =>
+    compalActionStream('/api/admin/compal/reboot', { baseUrl }, onEvent ?? (() => undefined)).then(
+      (done) => ({
+        ok: done.ok,
+        url: done.url,
+        message: done.message,
+      }),
+    ),
+
   adminUpdateConfig: (body: Record<string, unknown>) =>
     apiFetch('/api/admin/config', {
       method: 'PATCH',
@@ -145,14 +232,24 @@ export const api = {
 
   agentRestart,
 
-  speedTestReport: (days = 30) =>
-    apiFetch(`/api/speed-tests/report?days=${days}`).then((r) => json<SpeedTestReport>(r)),
+  speedTestReport: (days = 90, limit = 2000, wanGateway?: string) => {
+    const params = new URLSearchParams({ days: String(days), limit: String(limit) });
+    if (wanGateway) params.set('wanGateway', wanGateway);
+    return apiFetch(`/api/speed-tests/report?${params}`).then((r) => json<SpeedTestReport>(r));
+  },
 
-  runSpeedTest: () =>
-    apiFetch('/api/speed-tests/run', { method: 'POST' }).then(async (r) => {
+  runSpeedTest: (target: 'agent' | 'wan-all' = 'agent') =>
+    apiFetch('/api/speed-tests/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target }),
+    }).then(async (r) => {
       if (!r.ok) {
         const err = (await r.json().catch(() => null)) as { error?: string } | null;
         throw new Error(err?.error ?? `${r.status} ${r.statusText}`);
+      }
+      if (target === 'wan-all') {
+        return json<{ results: SpeedTestResult[] }>(r);
       }
       return json<{ result: SpeedTestResult }>(r);
     }),
@@ -215,11 +312,11 @@ export const api = {
 
   diagnosticsWifi: () => apiFetch('/api/diagnostics/wifi').then((r) => json<WifiScanResponse>(r)),
 
-  diagnosticsCameraScan: (cidr?: string) =>
+  diagnosticsCameraScan: (body: { cidr?: string; travelMode?: boolean } = {}) =>
     apiFetch('/api/diagnostics/camera-scan', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(cidr ? { cidr } : {}),
+      body: JSON.stringify(body),
     }).then((r) => json<CameraScanResponse>(r)),
 
   controlBootstrap: () => apiFetch('/api/control/bootstrap').then((r) => json<ControlBootstrap>(r)),
@@ -279,6 +376,44 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ schedule: ParentalScheduleRow }>(r)),
+
+  controlDnsBlock: (body: { deviceId?: string; ip?: string; mac?: string; domain: string }) =>
+    apiFetch('/api/control/dns-block', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlDnsUnblock: (body: { deviceId?: string; ip?: string; mac?: string; domain: string }) =>
+    apiFetch('/api/control/dns-unblock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlDestBlock: (body: { deviceId?: string; ip?: string; mac?: string; destination: string }) =>
+    apiFetch('/api/control/dest-block', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlDestUnblock: (body: { deviceId?: string; ip?: string; mac?: string; destination: string }) =>
+    apiFetch('/api/control/dest-unblock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlRoute: (body: RoutePolicyRequest) =>
+    apiFetch('/api/control/route', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
+
+  controlRouteOptions: () =>
+    apiFetch('/api/control/route-options').then((r) => json<{ options: RouteOption[] }>(r)),
 };
 
 export interface ParentalScheduleRow {
@@ -370,6 +505,75 @@ export interface AdminWirelessResponse {
   count?: number;
   transmitting?: number;
   routers: AdminWirelessRouter[];
+}
+
+export interface PfSenseGatewayRow {
+  name: string | null;
+  gateway: string | null;
+  srcip: string | null;
+  monitor: string | null;
+  status: string | null;
+  delay: number | null;
+  loss: number | null;
+  interface: string | null;
+  isDefault?: boolean;
+  description?: string | null;
+}
+
+export interface PfSenseGatewaysResponse {
+  configured: boolean;
+  fetchedAt?: string;
+  version?: string | null;
+  hostname?: string | null;
+  system?: {
+    platform: string | null;
+    uptime: string | null;
+    version: string | null;
+    hostname: string | null;
+    domain: string | null;
+  } | null;
+  defaultGateway?: { ipv4: string | null; ipv6: string | null } | null;
+  gatewayGroups?: Array<{
+    name: string;
+    description?: string | null;
+    members: Array<{ name: string; tier: number; status?: string | null }>;
+  }>;
+  gatewayGroupInsights?: Array<{
+    group: string;
+    description: string | null;
+    preferredGateway: string | null;
+    preferredTier: number | null;
+    activeGateway: string | null;
+    activeStateCount: number;
+    members: Array<{ name: string; tier: number; status?: string | null }>;
+  }>;
+  gateways?: PfSenseGatewayRow[];
+  interfaces?: Array<{
+    name: string | null;
+    descr: string | null;
+    ipaddr: string | null;
+    subnet: string | null;
+    vlan: string | null;
+    hwif: string | null;
+    mac: string | null;
+    status: string | null;
+  }>;
+  vpnClients?: Array<{
+    name: string;
+    type: 'openvpn' | 'wireguard';
+    status: string | null;
+    virtualAddress: string | null;
+    remoteHost: string | null;
+    interface: string | null;
+    enabled: boolean;
+  }>;
+  egress?: Array<{
+    gateway: string;
+    interface: string;
+    stateCount: number;
+    bytesOut: number;
+  }>;
+  stateCount?: number;
 }
 
 export type { SpeedTestReport, SpeedTestResult, ActiveSiteResponse, NetworkSite } from '@netscanner/contracts';
