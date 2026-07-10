@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ControlStatus, Device, PolicyAuditEntry, RouteOption } from '@netscanner/contracts';
 import { api } from '../lib/api';
+import { LoadingSpinner } from './LoadingSpinner';
 
 type PolicyTab = 'internet' | 'domains' | 'destinations' | 'route' | 'audit';
 
@@ -29,6 +30,9 @@ export function DevicePolicy({ device }: { device: Device }) {
   const [audit, setAudit] = useState<PolicyAuditEntry[]>([]);
   const [routeOptions, setRouteOptions] = useState<RouteOption[]>([]);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  const [pendingGateway, setPendingGateway] = useState<string | null | undefined>(undefined);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState('');
   const [destInput, setDestInput] = useState('');
@@ -74,22 +78,61 @@ export function DevicePolicy({ device }: { device: Device }) {
     if (tab === 'route') void loadRouteOptions();
   }, [tab, loadAudit, loadRouteOptions]);
 
-  const act = async (fn: () => Promise<unknown>) => {
+  const act = async (fn: () => Promise<unknown>, label?: string) => {
     setBusy(true);
+    setBusyLabel(label ?? 'Working…');
     setError(null);
     try {
-      await fn();
+      const result = await fn();
       await refresh();
       if (tab === 'audit') await loadAudit();
+      return result;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg =
+        e instanceof Error && e.name === 'AbortError'
+          ? 'Timed out waiting for pfSense — try again in a moment'
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      setError(msg);
+      return null;
     } finally {
       setBusy(false);
+      setBusyLabel(null);
+      setPendingGateway(undefined);
+    }
+  };
+
+  const applyRoute = async (gatewayName: string | null) => {
+    setPendingGateway(gatewayName);
+    setRouteNotice(null);
+    const label = gatewayName
+      ? `Applying route via ${gatewayName}…`
+      : 'Clearing route override…';
+    const result = await act(async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 35_000);
+      try {
+        return await api.controlRoute({ deviceId: device.id, gatewayName }, ctrl.signal);
+      } finally {
+        clearTimeout(timer);
+      }
+    }, label);
+    if (result && typeof result === 'object' && 'entry' in result) {
+      const entry = (result as { entry: PolicyAuditEntry }).entry;
+      const killed = entry.detail?.statesKilled === true;
+      setRouteNotice(
+        killed
+          ? 'Done. Active connections were reset — new traffic follows this policy.'
+          : 'Saved. If traffic still uses the old path, toggle Wi‑Fi on the device.',
+      );
     }
   };
 
   const dnsQueries = (device.signals?.dnsProfile as { queries?: string[] } | undefined)?.queries ?? [];
   const trafficPeers = (device.signals?.traffic as { peers?: string[] } | undefined)?.peers ?? [];
+  const selectValue =
+    pendingGateway !== undefined ? (pendingGateway ?? '') : (status?.egressGateway ?? '');
 
   if (bootstrapReady === false) {
     return (
@@ -102,7 +145,7 @@ export function DevicePolicy({ device }: { device: Device }) {
           type="button"
           disabled={busy}
           className="btn btn-ghost text-xs"
-          onClick={() => void act(() => api.controlBootstrapApply())}
+          onClick={() => void act(() => api.controlBootstrapApply(), 'Bootstrapping…')}
         >
           Bootstrap pfSense aliases
         </button>
@@ -149,7 +192,7 @@ export function DevicePolicy({ device }: { device: Device }) {
               type="button"
               disabled={busy || status.blocked}
               className="btn btn-ghost text-xs text-bad"
-              onClick={() => void act(() => api.controlBlock({ deviceId: device.id }))}
+              onClick={() => void act(() => api.controlBlock({ deviceId: device.id }), 'Blocking…')}
             >
               Block internet
             </button>
@@ -157,7 +200,7 @@ export function DevicePolicy({ device }: { device: Device }) {
               type="button"
               disabled={busy || !status.blocked}
               className="btn btn-ghost text-xs"
-              onClick={() => void act(() => api.controlUnblock({ deviceId: device.id }))}
+              onClick={() => void act(() => api.controlUnblock({ deviceId: device.id }), 'Unblocking…')}
             >
               Unblock
             </button>
@@ -165,7 +208,9 @@ export function DevicePolicy({ device }: { device: Device }) {
               type="button"
               disabled={busy || status.paused}
               className="btn btn-ghost text-xs text-warn"
-              onClick={() => void act(() => api.controlPause({ deviceId: device.id, durationMs: 3_600_000 }))}
+              onClick={() =>
+                void act(() => api.controlPause({ deviceId: device.id, durationMs: 3_600_000 }), 'Pausing…')
+              }
             >
               Pause 1h
             </button>
@@ -176,8 +221,10 @@ export function DevicePolicy({ device }: { device: Device }) {
       {status && tab === 'domains' && (
         <div className="space-y-2 text-xs">
           <p className="text-muted">
-            Blocks resolved IPs for listed FQDNs via pfSense URL alias (NS_DNS_BLOCK). CDN-heavy sites may leak —
-            see docs.
+            Blocks via pfSense DNS sinkhole (0.0.0.0) plus firewall alias NS_DNS_BLOCK. Works when the
+            device uses pfSense for DNS. iCloud Private Relay / app DoH bypass this — disable Private
+            Relay on the iPhone for domain blocks to stick. CDN sites may still need Destinations
+            blocks for leftover IPs.
           </p>
           {status.dnsBlockedDomains.length > 0 ? (
             <ul className="space-y-1">
@@ -188,7 +235,9 @@ export function DevicePolicy({ device }: { device: Device }) {
                     type="button"
                     disabled={busy}
                     className="text-bad hover:underline"
-                    onClick={() => void act(() => api.controlDnsUnblock({ deviceId: device.id, domain: d }))}
+                    onClick={() =>
+                      void act(() => api.controlDnsUnblock({ deviceId: device.id, domain: d }), 'Removing…')
+                    }
                   >
                     Remove
                   </button>
@@ -213,7 +262,7 @@ export function DevicePolicy({ device }: { device: Device }) {
                 void act(async () => {
                   await api.controlDnsBlock({ deviceId: device.id, domain: domainInput.trim() });
                   setDomainInput('');
-                })
+                }, 'Blocking domain…')
               }
             >
               Block domain
@@ -229,7 +278,9 @@ export function DevicePolicy({ device }: { device: Device }) {
                     type="button"
                     disabled={busy}
                     className="rounded border border-edge px-2 py-0.5 text-[10px] hover:bg-panelup"
-                    onClick={() => void act(() => api.controlDnsBlock({ deviceId: device.id, domain: q }))}
+                    onClick={() =>
+                      void act(() => api.controlDnsBlock({ deviceId: device.id, domain: q }), 'Blocking domain…')
+                    }
                   >
                     {q}
                   </button>
@@ -252,7 +303,12 @@ export function DevicePolicy({ device }: { device: Device }) {
                     type="button"
                     disabled={busy}
                     className="text-bad hover:underline"
-                    onClick={() => void act(() => api.controlDestUnblock({ deviceId: device.id, destination: d }))}
+                    onClick={() =>
+                      void act(
+                        () => api.controlDestUnblock({ deviceId: device.id, destination: d }),
+                        'Removing…',
+                      )
+                    }
                   >
                     Remove
                   </button>
@@ -277,7 +333,7 @@ export function DevicePolicy({ device }: { device: Device }) {
                 void act(async () => {
                   await api.controlDestBlock({ deviceId: device.id, destination: destInput.trim() });
                   setDestInput('');
-                })
+                }, 'Blocking destination…')
               }
             >
               Block destination
@@ -293,7 +349,12 @@ export function DevicePolicy({ device }: { device: Device }) {
                     type="button"
                     disabled={busy}
                     className="rounded border border-edge px-2 py-0.5 font-mono text-[10px] hover:bg-panelup"
-                    onClick={() => void act(() => api.controlDestBlock({ deviceId: device.id, destination: p }))}
+                    onClick={() =>
+                      void act(
+                        () => api.controlDestBlock({ deviceId: device.id, destination: p }),
+                        'Blocking destination…',
+                      )
+                    }
                   >
                     {p}
                   </button>
@@ -308,7 +369,8 @@ export function DevicePolicy({ device }: { device: Device }) {
         <div className="space-y-2 text-xs">
           <p className="text-muted">
             Policy routing: NetScanner creates a floating pass rule + alias (NS_RT_*) on pfSense with the Gateway
-            column set. Survives agent restarts.
+            column set. After apply, active firewall states for this device are cleared so new traffic uses the
+            chosen gateway immediately.
           </p>
           <p className="text-slate-300">
             Current:{' '}
@@ -323,17 +385,12 @@ export function DevicePolicy({ device }: { device: Device }) {
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <select
-              className="min-w-[14rem] flex-1 rounded border border-edge bg-panel px-2 py-1.5 text-slate-100"
-              value={status.egressGateway ?? ''}
+              className="min-w-[14rem] flex-1 rounded border border-edge bg-panel px-2 py-1.5 text-slate-100 disabled:opacity-60"
+              value={selectValue}
               disabled={busy}
               onChange={(e) => {
                 const v = e.target.value;
-                void act(() =>
-                  api.controlRoute({
-                    deviceId: device.id,
-                    gatewayName: v === '' ? null : v,
-                  }),
-                );
+                void applyRoute(v === '' ? null : v);
               }}
             >
               <option value="">Default (no override)</option>
@@ -348,11 +405,15 @@ export function DevicePolicy({ device }: { device: Device }) {
               type="button"
               disabled={busy || !status.egressGateway}
               className="btn btn-ghost text-xs"
-              onClick={() => void act(() => api.controlRoute({ deviceId: device.id, gatewayName: null }))}
+              onClick={() => void applyRoute(null)}
             >
               Clear
             </button>
           </div>
+          {busy && busyLabel && (
+            <LoadingSpinner label={busyLabel} className="justify-start py-2" />
+          )}
+          {!busy && routeNotice && <p className="text-good">{routeNotice}</p>}
           {routeOptions.length === 0 && (
             <p className="text-muted">No gateways from telemetry yet — open Admin → Network or wait for pfSense refresh.</p>
           )}
@@ -371,6 +432,9 @@ export function DevicePolicy({ device }: { device: Device }) {
                   <span className="text-muted"> · {new Date(e.createdAt).toLocaleString()}</span>
                   {e.detail?.domain ? <span className="text-muted"> · {String(e.detail.domain)}</span> : null}
                   {e.detail?.destination ? <span className="text-muted"> · {String(e.detail.destination)}</span> : null}
+                  {e.detail?.gatewayName ? (
+                    <span className="text-muted"> · {String(e.detail.gatewayName)}</span>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -378,6 +442,9 @@ export function DevicePolicy({ device }: { device: Device }) {
         </div>
       )}
 
+      {busy && tab !== 'route' && busyLabel && (
+        <LoadingSpinner label={busyLabel} className="justify-start py-1" />
+      )}
       {error && <p className="text-xs text-bad">{error}</p>}
     </section>
   );

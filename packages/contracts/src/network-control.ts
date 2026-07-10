@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const NS_ALIAS_BLOCK = 'NS_BLOCK';
 export const NS_ALIAS_PAUSED = 'NS_PAUSED';
 export const NS_ALIAS_AUTOBLOCK = 'NS_AUTOBLOCK';
-/** FQDN/url entries — resolved periodically by pfSense. */
+/** FQDN entries stored in a host alias (pfSense REST has no `url` type). */
 export const NS_ALIAS_DNS_BLOCK = 'NS_DNS_BLOCK';
 /** Host IPs subject to DNS block rules (source alias). */
 export const NS_ALIAS_DNS_SRC = 'NS_DNS_SRC';

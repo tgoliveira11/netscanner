@@ -16,6 +16,8 @@ function controlError(reply: FastifyReply, error: unknown) {
   const msg = error instanceof Error ? error.message : String(error);
   if (/not found/i.test(msg)) return reply.status(404).send({ error: msg });
   if (/not configured|control disabled/i.test(msg)) return reply.status(503).send({ error: msg });
+  // pfSense validation (FIELD_*) is a client/config problem, not an upstream outage.
+  if (/FIELD_|bad request|400:/i.test(msg)) return reply.status(400).send({ error: msg });
   return reply.status(502).send({ error: msg });
 }
 
@@ -33,7 +35,11 @@ export function registerControlRoutes(app: FastifyInstance, c: Container): void 
   app.post('/api/control/bootstrap', async (request, reply) => {
     if (!authorizeControl(request, c.config)) return reply.status(401).send({ error: 'unauthorized' });
     if (!c.networkControl.enabled()) return reply.status(503).send({ error: 'control disabled' });
-    return c.networkControl.bootstrap();
+    try {
+      return await c.networkControl.bootstrap();
+    } catch (error) {
+      return controlError(reply, error);
+    }
   });
 
   app.get('/api/control/audit', async (request, reply) => {
@@ -48,7 +54,9 @@ export function registerControlRoutes(app: FastifyInstance, c: Container): void 
     try {
       return await c.networkControl.status(deviceId);
     } catch (error) {
-      return reply.status(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const msg = error instanceof Error ? error.message : String(error);
+      if (/device not found/i.test(msg)) return reply.status(404).send({ error: msg });
+      return controlError(reply, error);
     }
   });
 

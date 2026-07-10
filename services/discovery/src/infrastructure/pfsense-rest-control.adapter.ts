@@ -1,4 +1,5 @@
 import type { Logger } from '@netscanner/logger';
+import { spawn } from 'node:child_process';
 import {
   NS_ALIAS_AUTOBLOCK,
   NS_ALIAS_BLOCK,
@@ -20,11 +21,19 @@ import { PfSenseHttpClient, type PfSenseHttpConfig } from './pfsense-http-client
 
 export type AliasName = string;
 
-const BOOTSTRAP_ALIASES: Array<{ name: string; type: string }> = [
+export interface PfSenseControlSshConfig {
+  host: string;
+  port?: number;
+  username?: string;
+  password?: string;
+}
+
+const BOOTSTRAP_ALIASES: Array<{ name: string; type: 'host' | 'network' | 'port' }> = [
   { name: NS_ALIAS_BLOCK, type: 'host' },
   { name: NS_ALIAS_PAUSED, type: 'host' },
   { name: NS_ALIAS_AUTOBLOCK, type: 'host' },
-  { name: NS_ALIAS_DNS_BLOCK, type: 'url' },
+  // pfSense REST only allows host|network|port — FQDNs go in a host alias (resolved by pfSense).
+  { name: NS_ALIAS_DNS_BLOCK, type: 'host' },
   { name: NS_ALIAS_DNS_SRC, type: 'host' },
   { name: NS_ALIAS_DEST_BLOCK, type: 'network' },
   { name: NS_ALIAS_DEST_SRC, type: 'host' },
@@ -40,6 +49,7 @@ export class PfSenseRestControlAdapter {
   constructor(
     config: PfSenseHttpConfig,
     private readonly logger: Logger,
+    private readonly ssh?: PfSenseControlSshConfig | null,
   ) {
     this.client = new PfSenseHttpClient(config);
   }
@@ -54,6 +64,8 @@ export class PfSenseRestControlAdapter {
       NS_LIMIT: await this.limiterExists('NS_LIMIT'),
       NS_LIMIT_IN: await this.limiterExists('NS_LIMIT_IN'),
       NS_LIMIT_OUT: await this.limiterExists('NS_LIMIT_OUT'),
+      NS_IN: await this.limiterExists('NS_IN'),
+      NS_OUT: await this.limiterExists('NS_OUT'),
     };
     return {
       ready,
@@ -111,15 +123,22 @@ export class PfSenseRestControlAdapter {
   }
 
   async bootstrap(): Promise<ControlBootstrap> {
+    const errors: string[] = [];
     for (const { name, type } of BOOTSTRAP_ALIASES) {
-      if (!(await this.aliasExists(name))) {
-        await this.client.post('/api/v2/firewall/alias', {
-          name,
-          type,
-          address: [],
-          descr: `NetScanner ${name}`,
-        });
-        this.logger.info({ name, type }, 'created pfSense alias');
+      try {
+        if (!(await this.aliasExists(name))) {
+          await this.client.post('/api/v2/firewall/alias', {
+            name,
+            type,
+            address: [],
+            descr: `NetScanner ${name}`,
+          });
+          this.logger.info({ name, type }, 'created pfSense alias');
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errors.push(`${name}: ${msg}`);
+        this.logger.warn({ name, type, error: msg }, 'alias bootstrap failed');
       }
     }
     if (!(await this.limiterExists('NS_LIMIT'))) {
@@ -134,41 +153,107 @@ export class PfSenseRestControlAdapter {
         this.logger.warn({ error }, 'limiter bootstrap skipped (may need manual shaper setup)');
       }
     }
-    await this.ensureDnsDestRules();
-    return this.checkBootstrap();
+    try {
+      await this.ensureAllPolicyRules();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      errors.push(`rules: ${msg}`);
+      this.logger.warn({ error: msg }, 'policy rule bootstrap failed');
+    }
+    const result = await this.checkBootstrap();
+    if (errors.length) {
+      return {
+        ...result,
+        message: `Bootstrap partial: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '…' : ''}`,
+      };
+    }
+    return result;
   }
 
   /** Ensure floating block rules for DNS/dest aliases exist. */
   async ensureDnsDestRules(): Promise<void> {
+    await this.ensureAllPolicyRules();
+  }
+
+  /** Ensure all NetScanner floating rules for known aliases. */
+  async ensureAllPolicyRules(): Promise<void> {
+    const ifaces = ['opt3', 'opt4', 'opt5', 'opt6'];
+    await this.ensureFloatingRule({
+      type: 'block',
+      descr: 'NetScanner BLOCK',
+      src: NS_ALIAS_BLOCK,
+      dst: 'any',
+      interfaces: ifaces,
+    });
+    await this.ensureFloatingRule({
+      type: 'block',
+      descr: 'NetScanner PAUSE',
+      src: NS_ALIAS_PAUSED,
+      dst: 'any',
+      interfaces: ifaces,
+    });
+    await this.ensureFloatingRule({
+      type: 'block',
+      descr: 'NetScanner AUTOBLOCK',
+      src: NS_ALIAS_AUTOBLOCK,
+      dst: 'any',
+      interfaces: ifaces,
+    });
     await this.ensureFloatingRule({
       type: 'block',
       descr: 'NetScanner DNS BLOCK',
       src: NS_ALIAS_DNS_SRC,
       dst: NS_ALIAS_DNS_BLOCK,
+      interfaces: ifaces,
     });
     await this.ensureFloatingRule({
       type: 'block',
       descr: 'NetScanner DEST BLOCK',
       src: NS_ALIAS_DEST_SRC,
       dst: NS_ALIAS_DEST_BLOCK,
+      interfaces: ifaces,
+    });
+    await this.ensureFloatingRule({
+      type: 'pass',
+      descr: 'NetScanner ROUTE WAN_DHCP',
+      src: NS_ALIAS_ROUTE_WAN,
+      dst: 'any',
+      gateway: 'WAN_DHCP',
+      interfaces: ifaces,
+    });
+    await this.ensureFloatingRule({
+      type: 'pass',
+      descr: 'NetScanner ROUTE LB_WAN',
+      src: NS_ALIAS_ROUTE_LB,
+      dst: 'any',
+      gateway: 'LB_WAN',
+      interfaces: ifaces,
+    });
+    await this.ensureFloatingRule({
+      type: 'pass',
+      descr: 'NetScanner ROUTE SSVPN_Failover',
+      src: NS_ALIAS_ROUTE_VPN,
+      dst: 'any',
+      gateway: 'SSVPN_Failover',
+      interfaces: ifaces,
     });
   }
 
   /**
    * Ensure host alias + floating pass rule with Gateway column for policy routing.
-   * Returns the alias name used as source.
+   * Returns whether a new floating rule had to be created (needs full filter reload).
    */
-  async ensureRouteGateway(gatewayName: string): Promise<string> {
+  async ensureRouteGateway(gatewayName: string): Promise<{ alias: string; ruleCreated: boolean }> {
     const alias = routeAliasForGateway(gatewayName);
     await this.ensureHostAlias(alias, `NetScanner route → ${gatewayName}`);
-    await this.ensureFloatingRule({
+    const ruleCreated = await this.ensureFloatingRule({
       type: 'pass',
       descr: `NetScanner ROUTE ${gatewayName}`,
       src: alias,
       dst: 'any',
       gateway: gatewayName,
     });
-    return alias;
+    return { alias, ruleCreated };
   }
 
   async ensureHostAlias(name: string, descr: string): Promise<void> {
@@ -196,62 +281,242 @@ export class PfSenseRestControlAdapter {
     src: string;
     dst: string;
     gateway?: string;
-  }): Promise<void> {
-    const rules = this.client.extractArray(await this.client.get('/api/v2/firewall/rules'));
+    interfaces?: string[];
+  }): Promise<boolean> {
+    let rules: Record<string, unknown>[] = [];
+    try {
+      rules = this.client.extractArray(await this.client.get('/api/v2/firewall/rules?limit=200'));
+    } catch (error) {
+      this.logger.warn(
+        { error: error instanceof Error ? error.message : error, descr: opts.descr },
+        'could not list firewall rules — will try create anyway',
+      );
+    }
     const existing = rules.find(
       (r) =>
         String(r.descr ?? '') === opts.descr ||
         (String(r.descr ?? '').includes(opts.descr.replace(/^NetScanner\s+/i, '')) &&
           String(r.source ?? r.src ?? '') === opts.src),
     );
+    // Policy routing (Gateway column) only works on inbound floating rules.
+    const direction = opts.gateway ? 'in' : 'any';
     if (existing) {
+      const id = existing.id;
       const gw = String(existing.gateway ?? '');
-      if (opts.gateway && gw && gw !== opts.gateway) {
+      const dir = String(existing.direction ?? '');
+      const needsPatch =
+        id != null &&
+        ((opts.gateway && gw !== opts.gateway) || (opts.gateway && dir !== 'in'));
+      if (needsPatch) {
+        try {
+          await this.client.patch('/api/v2/firewall/rule', {
+            id,
+            direction: 'in',
+            ...(opts.gateway ? { gateway: opts.gateway } : {}),
+          }, false);
+          this.logger.info(
+            { descr: opts.descr, id, gateway: opts.gateway, previousDirection: dir },
+            'updated floating route rule direction/gateway',
+          );
+          return true;
+        } catch (error) {
+          this.logger.warn(
+            {
+              descr: opts.descr,
+              error: error instanceof Error ? error.message : error,
+            },
+            'failed to patch floating route rule',
+          );
+        }
+      } else if (opts.gateway && gw && gw !== opts.gateway) {
         this.logger.warn(
           { descr: opts.descr, existingGateway: gw, wanted: opts.gateway },
           'route rule exists with different gateway — leaving as-is',
         );
       }
-      return;
+      return false;
     }
+    const interfaces = opts.interfaces?.length ? opts.interfaces : ['opt3', 'opt4', 'opt5', 'opt6'];
     const body: Record<string, unknown> = {
       type: opts.type,
       floating: true,
       quick: true,
-      interface: [],
-      direction: 'any',
+      interface: interfaces,
+      direction,
       ipprotocol: 'inet',
-      protocol: 'any',
-      src: opts.src,
-      dst: opts.dst,
+      // Omit protocol — pfSense REST rejects "any"; null/omit means all protocols.
+      source: opts.src,
+      destination: opts.dst,
       descr: opts.descr,
       disabled: false,
       log: false,
     };
     if (opts.gateway) body.gateway = opts.gateway;
     try {
-      await this.client.post('/api/v2/firewall/rule', body);
+      // apply=false — caller reloads once (full filter load is expensive).
+      await this.client.post('/api/v2/firewall/rule', body, false);
       this.logger.info({ descr: opts.descr, gateway: opts.gateway }, 'created pfSense floating rule');
+      return true;
     } catch (error) {
-      // Some pfSense builds require at least one interface on floating rules.
-      try {
-        await this.client.post('/api/v2/firewall/rule', {
-          ...body,
-          interface: ['wan', 'lan', 'opt1', 'opt2', 'opt3', 'opt4', 'opt5', 'opt6'],
-        });
-        this.logger.info({ descr: opts.descr }, 'created pfSense floating rule (with interfaces)');
-      } catch (retryError) {
-        this.logger.warn(
-          {
-            descr: opts.descr,
-            error: retryError instanceof Error ? retryError.message : String(retryError),
-            firstError: error instanceof Error ? error.message : String(error),
-          },
-          'failed to create floating rule — create manually in pfSense',
-        );
-        throw retryError;
+      const msg = error instanceof Error ? error.message : String(error);
+      if (/already exists|duplicate|unique constraint/i.test(msg)) {
+        this.logger.info({ descr: opts.descr }, 'floating rule already present');
+        return false;
+      }
+      this.logger.warn(
+        { descr: opts.descr, error: msg },
+        'failed to create floating rule — create manually in pfSense',
+      );
+      throw error instanceof Error ? error : new Error(msg);
+    }
+  }
+
+  /**
+   * Push alias membership into the live pf table without regenerating the whole
+   * ruleset. This is what makes route changes take effect immediately.
+   */
+  async syncHostAliasTable(alias: string, addresses: string[]): Promise<boolean> {
+    if (!this.ssh?.host || !this.ssh.password) return false;
+    const list = addresses.map((a) => JSON.stringify(a)).join(' ');
+    const cmd =
+      addresses.length === 0
+        ? `pfctl -t ${JSON.stringify(alias)} -T flush 2>&1; echo NS_TBL_OK`
+        : `pfctl -t ${JSON.stringify(alias)} -T replace ${list} 2>&1; echo NS_TBL_OK`;
+    const out = await this.sshExec(cmd, 12_000);
+    const ok = Boolean(out?.includes('NS_TBL_OK'));
+    if (ok) this.logger.info({ alias, addresses }, 'synced live pf alias table');
+    else this.logger.warn({ alias, out: out?.slice(0, 200) }, 'live pf alias table sync failed');
+    return ok;
+  }
+
+  /** Remove a single address from a live pf table (no full flush). */
+  async deleteFromHostAliasTable(alias: string, address: string): Promise<boolean> {
+    if (!this.ssh?.host || !this.ssh.password) return false;
+    const out = await this.sshExec(
+      `pfctl -t ${JSON.stringify(alias)} -T delete ${JSON.stringify(address)} 2>&1; echo NS_TBL_OK`,
+      8_000,
+    );
+    const ok = Boolean(out?.includes('NS_TBL_OK'));
+    if (ok) this.logger.info({ alias, address }, 'deleted address from live pf alias table');
+    return ok;
+  }
+
+  /**
+   * Drop pf states for a source IP so a new gateway / block policy takes effect
+   * immediately.
+   */
+  async killStatesForSource(ip: string): Promise<{ killed: boolean; via: 'rest' | 'ssh' | 'none' }> {
+    if (this.ssh?.host && this.ssh.password) {
+      const ok = await this.sshExec(
+        `pfctl -k ${JSON.stringify(ip)} 2>&1; pfctl -k 0.0.0.0/0 -k ${JSON.stringify(ip)} 2>&1; echo OK`,
+        12_000,
+      );
+      if (ok?.includes('OK')) {
+        this.logger.info({ ip }, 'killed pfSense states via SSH pfctl');
+        return { killed: true, via: 'ssh' };
       }
     }
+
+    const queries = [
+      `/api/v2/firewall/states?source__startswith=${encodeURIComponent(ip)}`,
+      `/api/v2/firewall/states?source=${encodeURIComponent(ip)}`,
+    ];
+    for (const path of queries) {
+      try {
+        await this.client.delete(path, false);
+        this.logger.info({ ip, path }, 'killed pfSense states for source');
+        return { killed: true, via: 'rest' };
+      } catch {
+        /* try next */
+      }
+    }
+
+    this.logger.warn(
+      { ip },
+      'could not kill pfSense states — reconnect device or reset states manually',
+    );
+    return { killed: false, via: 'none' };
+  }
+
+  /**
+   * Force the generated ruleset into live pf. Only needed when a new floating
+   * rule is created — membership changes use syncHostAliasTable instead.
+   */
+  async reloadFilter(): Promise<boolean> {
+    if (!this.ssh?.host || !this.ssh.password) {
+      this.logger.warn('filter reload: no SSH configured — live pf may stay stale');
+      return false;
+    }
+    // Skip REST /firewall/apply — it often hangs when pfSense is busy.
+    const out = await this.sshExec(
+      [
+        'php -r \'require_once("/etc/inc/config.inc"); require_once("/etc/inc/filter.inc"); filter_configure();\'',
+        'pfctl -nf /tmp/rules.debug >/tmp/ns-pf-check.txt 2>&1',
+        'if [ $? -eq 0 ]; then pfctl -f /tmp/rules.debug >/tmp/ns-pf-load.txt 2>&1 && echo NS_PF_OK; else echo NS_PF_BAD; cat /tmp/ns-pf-check.txt; fi',
+      ].join('; '),
+      25_000,
+    );
+    const ok = Boolean(out?.includes('NS_PF_OK'));
+    if (ok) this.logger.info('pfSense filter reloaded into live pf');
+    else this.logger.warn({ out: out?.slice(0, 400) }, 'pfSense filter reload failed');
+    return ok;
+  }
+
+  private sshExec(remoteCmd: string, timeoutMs = 15_000): Promise<string | null> {
+    if (!this.ssh?.host || !this.ssh.password) return Promise.resolve(null);
+    const host = this.ssh.host;
+    const port = this.ssh.port && this.ssh.port > 0 ? this.ssh.port : 22;
+    const username = this.ssh.username?.trim() || 'admin';
+    const password = this.ssh.password;
+    const sshTail = [
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      'ConnectTimeout=8',
+      '-p',
+      String(port),
+      `${username}@${host}`,
+      remoteCmd,
+    ];
+
+    return new Promise((resolve) => {
+      const proc = spawn('sshpass', ['-e', 'ssh', '-o', 'BatchMode=no', ...sshTail], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, SSHPASS: password },
+      });
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          /* ignore */
+        }
+        this.logger.warn({ timeoutMs }, 'pfSense SSH command timed out');
+        resolve(null);
+      }, timeoutMs);
+      proc.stdout?.setEncoding('utf8');
+      proc.stdout?.on('data', (c: string) => {
+        stdout += c;
+      });
+      proc.stderr?.setEncoding('utf8');
+      proc.stderr?.on('data', (c: string) => {
+        stderr += c;
+      });
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code !== 0 && !stdout) {
+          this.logger.warn({ code, stderr: stderr.slice(0, 200) }, 'pfSense SSH command failed');
+          resolve(null);
+          return;
+        }
+        resolve(stdout);
+      });
+      proc.on('error', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+    });
   }
 
   async addToAlias(alias: AliasName, address: string): Promise<void> {
@@ -283,6 +548,88 @@ export class PfSenseRestControlAdapter {
     const unique = [...new Set(addresses.map((a) => a.trim()).filter(Boolean))];
     await this.patchAliasAddresses(entry, unique);
     this.logger.info({ alias, count: unique.length }, 'pfSense alias synced');
+  }
+
+  /**
+   * Sinkhole domains in Unbound (DNS Resolver) so clients that use pfSense DNS
+   * get 0.0.0.0. Firewall IP aliases alone miss CDN / Private Relay traffic.
+   */
+  async syncDnsSinkholes(domains: string[]): Promise<void> {
+    const wanted = new Set<string>();
+    for (const raw of domains) {
+      const d = normalizeDomain(raw);
+      if (!d) continue;
+      wanted.add(d);
+      if (!d.startsWith('www.')) wanted.add(`www.${d}`);
+    }
+
+    let existing: Record<string, unknown>[] = [];
+    try {
+      existing = this.client.extractArray(
+        await this.client.get('/api/v2/services/dns_resolver/host_overrides'),
+      );
+    } catch (error) {
+      this.logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'could not list DNS host overrides',
+      );
+      return;
+    }
+
+    const ours = existing.filter((r) => /NetScanner DNS block/i.test(String(r.descr ?? '')));
+    const have = new Set(ours.map((r) => overrideFqdn(r)));
+
+    for (const row of ours) {
+      const fqdn = overrideFqdn(row);
+      if (fqdn && !wanted.has(fqdn) && row.id != null) {
+        try {
+          await this.client.delete(
+            `/api/v2/services/dns_resolver/host_override?id=${encodeURIComponent(String(row.id))}`,
+            false,
+          );
+          have.delete(fqdn);
+        } catch (error) {
+          this.logger.warn(
+            { fqdn, error: error instanceof Error ? error.message : error },
+            'failed to remove DNS sinkhole',
+          );
+        }
+      }
+    }
+
+    for (const fqdn of wanted) {
+      if (have.has(fqdn)) continue;
+      const parts = splitFqdn(fqdn);
+      if (!parts) continue;
+      try {
+        await this.client.post(
+          '/api/v2/services/dns_resolver/host_override',
+          {
+            host: parts.host,
+            domain: parts.domain,
+            ip: ['0.0.0.0'],
+            descr: 'NetScanner DNS block',
+          },
+          true,
+          20_000,
+        );
+        this.logger.info({ fqdn }, 'created DNS sinkhole host override');
+      } catch (error) {
+        this.logger.warn(
+          { fqdn, error: error instanceof Error ? error.message : error },
+          'failed to create DNS sinkhole',
+        );
+      }
+    }
+
+    try {
+      await this.client.post('/api/v2/services/dns_resolver/apply', {});
+    } catch (error) {
+      this.logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'DNS resolver apply failed — overrides may need manual apply',
+      );
+    }
   }
 
   async createDhcpReservation(req: DhcpReservationRequest): Promise<Record<string, unknown>> {
@@ -345,14 +692,26 @@ export class PfSenseRestControlAdapter {
     entry: Record<string, unknown> & { id: string | number },
     addresses: string[],
   ): Promise<void> {
-    await this.client.patch('/api/v2/firewall/alias', {
-      id: entry.id,
-      name: entry.name,
-      type: entry.type,
-      descr: entry.descr ?? '',
-      address: addresses,
-      detail: entry.detail ?? [],
-    });
+    const hasFqdn = addresses.some((a) => !isIpOrCidr(a));
+    await this.client.patch(
+      '/api/v2/firewall/alias',
+      {
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        descr: entry.descr ?? '',
+        address: addresses,
+        detail: entry.detail ?? [],
+      },
+      // FQDN host aliases need apply so filterdns expands names → IPs.
+      hasFqdn,
+      hasFqdn ? 20_000 : undefined,
+    );
+    const name = String(entry.name ?? '');
+    // Never pfctl-replace FQDN host aliases — that wipes filterdns IP expansion.
+    if (name && !hasFqdn) {
+      await this.syncHostAliasTable(name, addresses).catch(() => false);
+    }
   }
 
   private verifyBlockRule(rules: Record<string, unknown>[], push: (c: ControlVerifyCheck) => void): void {
@@ -560,13 +919,13 @@ export class PfSenseRestControlAdapter {
 
   private async verifyLimiters(push: (c: ControlVerifyCheck) => void): Promise<void> {
     const rows = this.client.extractArray(await this.client.get('/api/v2/firewall/traffic_shaper/limiters'));
-    const ns = rows.filter((r) => /^NS_LIMIT/i.test(String(r.name ?? '')));
+    const ns = rows.filter((r) => /^(NS_LIMIT|NS_IN|NS_OUT)/i.test(String(r.name ?? '')));
     if (!ns.length) {
       push({
         id: 'limiter',
         label: 'Traffic shaper limiters',
         status: 'warn',
-        detail: 'No NS_LIMIT* limiters — create in Firewall → Traffic Shaper → Limiters',
+        detail: 'No NS_IN/NS_OUT (or NS_LIMIT*) limiters — create in Firewall → Traffic Shaper → Limiters',
       });
       return;
     }
@@ -613,4 +972,31 @@ export class PfSenseRestControlAdapter {
       });
     }
   }
+}
+
+function normalizeDomain(raw: string): string | null {
+  const d = raw.trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
+  if (!d || !d.includes('.')) return null;
+  return d;
+}
+
+function splitFqdn(fqdn: string): { host: string; domain: string } | null {
+  const parts = fqdn.split('.').filter(Boolean);
+  if (parts.length < 2) return null;
+  if (parts.length === 2) return { host: parts[0]!, domain: parts[1]! };
+  return { host: parts[0]!, domain: parts.slice(1).join('.') };
+}
+
+function overrideFqdn(row: Record<string, unknown>): string {
+  const host = String(row.host ?? '').trim().toLowerCase();
+  const domain = String(row.domain ?? '').trim().toLowerCase();
+  if (!host || !domain) return '';
+  return `${host}.${domain}`;
+}
+
+function isIpOrCidr(value: string): boolean {
+  return (
+    /^\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?$/.test(value) ||
+    (value.includes(':') && !value.includes('.'))
+  );
 }

@@ -137,16 +137,25 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
     if (!c.leaseSource) return { configured: false };
     const force = String((request.query as { refresh?: string }).refresh ?? '') === '1';
     let telemetry = resolvePfSenseTelemetry(c.leaseSource);
-    // Serve cache when fresh enough; full refresh is ~30s and blocks the UI / WAN speed button.
+    // Serve cache when fresh enough; full refresh can hang when pfSense HTTPS is down.
     const ageMs = telemetry?.fetchedAt ? Date.now() - Date.parse(telemetry.fetchedAt) : Number.POSITIVE_INFINITY;
     const stale = !Number.isFinite(ageMs) || ageMs > 45_000;
-    if (force || !telemetry || stale) {
+    const refresh = async () => {
       try {
-        await c.leaseSource.getLeases();
+        await c.leaseSource!.getLeases();
       } catch {
-        /* return last cached snapshot when refresh fails */
+        /* keep last cached snapshot */
       }
-      telemetry = resolvePfSenseTelemetry(c.leaseSource);
+    };
+    if (force || !telemetry || stale) {
+      if (telemetry && !force) {
+        // Stale-but-present: never block the UI on pfSense; refresh in background.
+        void refresh();
+      } else {
+        // No cache or explicit refresh: wait briefly, then return whatever we have.
+        await Promise.race([refresh(), new Promise<void>((r) => setTimeout(r, 2_500))]);
+        telemetry = resolvePfSenseTelemetry(c.leaseSource);
+      }
     }
     if (!telemetry) return { configured: false };
     return {
