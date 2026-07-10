@@ -110,12 +110,27 @@ export class NetworkControlService {
     const device = await this.repo.findById(deviceId);
     if (!device) throw new Error('device not found');
     const addr = device.ip;
-    const blocked = this.adapter
-      ? (await this.adapter.listAliasAddresses(NS_ALIAS_BLOCK)).includes(addr)
-      : false;
-    const pausedAlias = this.adapter
-      ? (await this.adapter.listAliasAddresses(NS_ALIAS_PAUSED)).includes(addr)
-      : false;
+    let blocked = false;
+    let pausedAlias = false;
+    if (this.adapter) {
+      try {
+        const lookup = Promise.all([
+          this.adapter.listAliasAddresses(NS_ALIAS_BLOCK),
+          this.adapter.listAliasAddresses(NS_ALIAS_PAUSED),
+        ]);
+        const timedOut = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('pfSense status lookup timeout')), 2_000);
+        });
+        const [blockAddrs, pauseAddrs] = await Promise.race([lookup, timedOut]);
+        blocked = blockAddrs.includes(addr);
+        pausedAlias = pauseAddrs.includes(addr);
+      } catch (error) {
+        this.logger.warn(
+          { deviceId, error: error instanceof Error ? error.message : error },
+          'pfSense alias lookup failed for status — using local policy state only',
+        );
+      }
+    }
     const pause = [...this.pauses.values()].find((p) => p.ip === addr || p.deviceId === deviceId);
     const dnsDomains = [...(this.dnsBlocks.get(deviceId) ?? [])];
     const destEntries = [...(this.destBlocks.get(deviceId) ?? [])];
@@ -185,6 +200,7 @@ export class NetworkControlService {
     this.dnsBlocks.set(target.deviceId, set);
     await this.policies.setValues(target.deviceId, this.getSiteId(), 'dns', [...set]);
     await this.syncDnsAliases();
+    await this.adapter.killStatesForSource(target.ip).catch(() => undefined);
     return this.audit.append({
       action: 'dns_block',
       target: target.ip,
@@ -290,20 +306,59 @@ export class NetworkControlService {
     }
 
     const prev = this.routes.get(target.deviceId);
+    let needsFilterReload = false;
+
     if (prev) {
       const prevAlias = routeAliasForGateway(prev);
-      await this.adapter.removeFromAlias(prevAlias, target.ip).catch(() => undefined);
+      try {
+        await this.adapter.removeFromAlias(prevAlias, target.ip);
+      } catch (error) {
+        this.logger.warn(
+          { alias: prevAlias, error: error instanceof Error ? error.message : error },
+          'REST remove from route alias failed — deleting from live table via SSH',
+        );
+        await this.adapter.deleteFromHostAliasTable(prevAlias, target.ip).catch(() => false);
+      }
     }
 
     if (!gatewayName) {
       this.routes.delete(target.deviceId);
       await this.policies.setRoute(target.deviceId, this.getSiteId(), null);
     } else {
-      const alias = await this.adapter.ensureRouteGateway(gatewayName);
-      this.routes.set(target.deviceId, gatewayName);
-      await this.policies.setRoute(target.deviceId, this.getSiteId(), gatewayName);
-      await this.adapter.addToAlias(alias, target.ip);
+      try {
+        const { alias, ruleCreated } = await this.adapter.ensureRouteGateway(gatewayName);
+        needsFilterReload = ruleCreated;
+        this.routes.set(target.deviceId, gatewayName);
+        await this.policies.setRoute(target.deviceId, this.getSiteId(), gatewayName);
+        try {
+          await this.adapter.addToAlias(alias, target.ip);
+        } catch (error) {
+          this.logger.warn(
+            { alias, error: error instanceof Error ? error.message : error },
+            'REST add to route alias failed — syncing live table via SSH',
+          );
+          await this.adapter.syncHostAliasTable(alias, [target.ip]).catch(() => false);
+        }
+      } catch (error) {
+        this.routes.set(target.deviceId, gatewayName);
+        await this.policies.setRoute(target.deviceId, this.getSiteId(), gatewayName);
+        const alias = routeAliasForGateway(gatewayName);
+        await this.adapter.syncHostAliasTable(alias, [target.ip]).catch(() => false);
+        this.logger.warn(
+          { gatewayName, error: error instanceof Error ? error.message : error },
+          'ensureRouteGateway failed — applying live table only',
+        );
+      }
     }
+
+    const filterReloaded = needsFilterReload
+      ? await this.adapter.reloadFilter().catch(() => false)
+      : false;
+
+    const states = await this.adapter.killStatesForSource(target.ip).catch(() => ({
+      killed: false,
+      via: 'none' as const,
+    }));
 
     return this.audit.append({
       action: 'route_policy',
@@ -312,6 +367,9 @@ export class NetworkControlService {
         deviceId: target.deviceId,
         gatewayName,
         profile: gatewayName ? profileFromGateway(gatewayName) : 'default',
+        filterReloaded,
+        statesKilled: states.killed,
+        statesVia: states.via,
       },
       actor: 'local',
       undone: false,
@@ -564,7 +622,7 @@ export class NetworkControlService {
       const device = await this.repo.findById(deviceId);
       if (!device) continue;
       try {
-        const alias = await this.adapter.ensureRouteGateway(gateway);
+        const { alias } = await this.adapter.ensureRouteGateway(gateway);
         await this.adapter.addToAlias(alias, device.ip);
       } catch (error) {
         this.logger.warn(
@@ -621,10 +679,23 @@ export class NetworkControlService {
       const d = await this.repo.findById(deviceId);
       if (!d) continue;
       srcIps.add(d.ip);
-      for (const dom of domains) allDomains.add(dom);
+      for (const dom of domains) {
+        const normalized = dom.trim().toLowerCase().replace(/\.$/, '');
+        if (!normalized) continue;
+        allDomains.add(normalized);
+        if (!normalized.startsWith('www.')) allDomains.add(`www.${normalized}`);
+      }
     }
+    // Host alias keeps FQDNs for filterdns IP expansion + firewall block rule.
     await this.adapter.setAliasAddresses(NS_ALIAS_DNS_BLOCK, [...allDomains]);
     await this.adapter.setAliasAddresses(NS_ALIAS_DNS_SRC, [...srcIps]);
+    // Unbound sinkhole so pfSense DNS clients get 0.0.0.0 for these names.
+    await this.adapter.syncDnsSinkholes([...allDomains]).catch((error) => {
+      this.logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'DNS sinkhole sync failed',
+      );
+    });
   }
 
   private async syncDestAliases(): Promise<void> {

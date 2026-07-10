@@ -847,15 +847,28 @@ export async function buildContainer(): Promise<Container> {
   const devicePolicies = await buildDevicePolicyRepository(config, logger);
   let pfsenseControl: PfSenseRestControlAdapter | null = null;
   if (config.PFSENSE_CONTROL_ENABLED && config.PFSENSE_URL?.trim() && config.PFSENSE_API_KEY?.trim()) {
+    const sshHost = resolvePfSenseSshHost(config.PFSENSE_URL);
     pfsenseControl = new PfSenseRestControlAdapter(
       {
         baseUrl: config.PFSENSE_URL,
         apiKey: config.PFSENSE_API_KEY,
         insecureTls: config.PFSENSE_INSECURE_TLS,
+        timeoutMs: 6_000,
       },
       logger,
+      sshHost && config.PFSENSE_SSH_PASSWORD?.trim()
+        ? {
+            host: sshHost,
+            port: config.PFSENSE_SSH_PORT,
+            username: config.PFSENSE_SSH_USER,
+            password: config.PFSENSE_SSH_PASSWORD,
+          }
+        : null,
     );
-    logger.info('pfSense network control enabled');
+    logger.info(
+      { sshStateKill: Boolean(sshHost && config.PFSENSE_SSH_PASSWORD?.trim()) },
+      'pfSense network control enabled',
+    );
   }
 
   const diagnostics = new DiagnosticsService(runner, fingerprint, repo, logger, getSiteId);

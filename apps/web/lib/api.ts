@@ -405,11 +405,12 @@ export const api = {
       body: JSON.stringify(body),
     }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
 
-  controlRoute: (body: RoutePolicyRequest) =>
+  controlRoute: (body: RoutePolicyRequest, signal?: AbortSignal) =>
     apiFetch('/api/control/route', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     }).then((r) => json<{ entry: PolicyAuditEntry }>(r)),
 
   controlRouteOptions: () =>

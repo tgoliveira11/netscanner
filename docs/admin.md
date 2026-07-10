@@ -30,19 +30,20 @@ When `PFSENSE_CONTROL_ENABLED=true`, NetScanner can write to pfSense via REST AP
 
 | Alias | Purpose | Required firewall rule |
 |-------|---------|----------------------|
-| `NS_BLOCK` | Manual block from device drawer | Floating **block**, source `NS_BLOCK`, protocol any |
-| `NS_PAUSED` | Timed pause | Floating **block**, source `NS_PAUSED` |
-| `NS_AUTOBLOCK` | New devices (if `AUTOBLOCK_ENABLED`) | Floating **block**, source `NS_AUTOBLOCK` |
-| `NS_LIMIT` | Per-device bandwidth | Floating **pass** rules, source `NS_LIMIT`, direction in/out + pipes |
+| `NS_BLOCK` | Manual block from device drawer | Floating **block**, source `NS_BLOCK`, protocol any, **Quick** |
+| `NS_PAUSED` | Timed pause | Floating **block**, source `NS_PAUSED`, **Quick** |
+| `NS_AUTOBLOCK` | New devices (if `AUTOBLOCK_ENABLED`) | Floating **block**, source `NS_AUTOBLOCK`, **Quick** |
+| `NS_DNS_SRC` / `NS_DNS_BLOCK` | Per-device domain block | Floating **block**, source `NS_DNS_SRC`, dest `NS_DNS_BLOCK`, **Quick** |
+| `NS_DEST_SRC` / `NS_DEST_BLOCK` | Per-device IP/CIDR block | Floating **block**, source `NS_DEST_SRC`, dest `NS_DEST_BLOCK`, **Quick** |
+| `NS_ROUTE_WAN` | Force egress via WAN | Floating **pass**, source `NS_ROUTE_WAN`, gateway `WAN_DHCP`, **Quick** |
+| `NS_ROUTE_LB` | Force egress via LB | Floating **pass**, source `NS_ROUTE_LB`, gateway `LB_WAN`, **Quick** |
+| `NS_ROUTE_VPN` | Force egress via VPN | Floating **pass**, source `NS_ROUTE_VPN`, gateway `SSVPN_Failover`, **Quick** |
+| `NS_RT_*` | Dynamic per-gateway route aliases | Created on demand when Policy → Route picks a gateway |
+| `NS_LIMIT` | Per-device bandwidth | Floating **pass** IN/OUT, source `NS_LIMIT`, pipes `NS_IN` / `NS_OUT` (or `NS_LIMIT_IN` / `NS_LIMIT_OUT`), **Quick** |
 
 **Verify rules** in Admin runs automated checks: aliases exist, rule sources are correct (not `any` or inverted `!alias`), bandwidth pipes wired, limiters enabled, and a safe round-trip write to `NS_BLOCK` using probe IP `198.18.0.254`.
 
-Manual pfSense setup guide:
-
-1. **Firewall → Aliases** — create host aliases (or use **Bootstrap aliases**).
-2. **Firewall → Rules → Floating** — block rules for BLOCK/PAUSE/AUTOBLOCK with **Quick** checked (required — without Quick, interface pass rules run first and block is ignored); pass rules for LIMIT with **Direction** `in` / `out` and matching pipes.
-3. **Firewall → Traffic Shaper → Limiters** — e.g. `NS_LIMIT_IN`, `NS_LIMIT_OUT`.
-4. **Apply Changes**, then click **Verify rules** in Admin.
+**Bootstrap** creates aliases and ensures the floating rules above (on VLANs `opt3–opt6` / LAN_INFRA–IOT). Dynamic `NS_RT_*` route rules are created when a device is assigned a specific gateway.
 
 ---
 

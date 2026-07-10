@@ -27,8 +27,9 @@ export class PfSenseHttpClient {
   }
 
   delete(path: string, apply = true, timeoutMs?: number): Promise<unknown> {
-    const q = apply ? '?apply=true' : '';
-    return this.request('DELETE', `${path}${q}`, undefined, timeoutMs);
+    const sep = path.includes('?') ? '&' : '?';
+    const withApply = apply ? `${path}${sep}apply=true` : path;
+    return this.request('DELETE', withApply, undefined, timeoutMs);
   }
 
   extractArray(raw: unknown): Record<string, unknown>[] {
