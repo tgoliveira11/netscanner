@@ -9,11 +9,18 @@ export interface SpeedTestInsert {
   server: string;
   trigger: SpeedTestTrigger;
   error: string | null;
+  testKind?: 'agent' | 'wan';
+  wanGateway?: string | null;
+  wanInterface?: string | null;
+  egressGateway?: string | null;
+  egressRoute?: string | null;
 }
 
 export interface SpeedTestListFilter {
   limit?: number;
   since?: Date;
+  testKind?: 'agent' | 'wan';
+  wanGateway?: string;
 }
 
 export interface ISpeedTestRepository {
@@ -21,4 +28,5 @@ export interface ISpeedTestRepository {
   list(filter?: SpeedTestListFilter): Promise<SpeedTestResult[]>;
   listSince(since: Date, limit?: number): Promise<SpeedTestResult[]>;
   latest(): Promise<SpeedTestResult | null>;
+  deleteOlderThan(before: Date): Promise<number>;
 }

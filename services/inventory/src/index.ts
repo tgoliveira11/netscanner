@@ -19,6 +19,8 @@ export * from './domain/speed-test-repository.js';
 export * from './infrastructure/speed-test.repository.js';
 export * from './application/speed-test.use-case.js';
 export * from './infrastructure/policy-audit.repository.js';
+export * from './domain/device-policy-repository.js';
+export * from './infrastructure/device-policy.repository.js';
 export * from './domain/site-repository.js';
 export * from './domain/site-matcher.js';
 export * from './infrastructure/site.repository.js';

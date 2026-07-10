@@ -1,5 +1,5 @@
 import type { Logger } from '@netscanner/logger';
-import { LuciClient, type LuciWirelessSsid } from './luci-client.js';
+import { LuciClient, type LuciWifiNeighbor, type LuciWirelessSsid } from './luci-client.js';
 import { resolveLuciAuthMode } from './luci-auth-mode.js';
 
 export interface OpenWrtScrapeTarget {
@@ -17,6 +17,37 @@ export interface OpenWrtWirelessResult {
   wifiCapable: boolean;
   radioCount: number;
   ssids: LuciWirelessSsid[];
+}
+
+export async function probeOpenWrtWifiNeighbors(
+  targets: OpenWrtScrapeTarget[],
+  logger: Logger,
+): Promise<{ url: string; neighbors: LuciWifiNeighbor[] }[]> {
+  const results: { url: string; neighbors: LuciWifiNeighbor[] }[] = [];
+  for (const target of targets) {
+    if (!target.username || !target.password) {
+      results.push({ url: target.baseUrl, neighbors: [] });
+      continue;
+    }
+    const auth = resolveLuciAuthMode({ kind: target.kind, username: target.username });
+    try {
+      const client = new LuciClient({
+        baseUrl: target.baseUrl,
+        username: target.username,
+        password: target.password,
+        insecureTls: true,
+        auth,
+      });
+      const neighbors = await client.scanWifiNeighbors();
+      logger.info({ url: target.baseUrl, kind: target.kind, neighbors: neighbors.length }, 'AP Wi‑Fi neighbor scan');
+      results.push({ url: target.baseUrl, neighbors });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn({ url: target.baseUrl, kind: target.kind, error: msg }, 'AP Wi‑Fi neighbor scan failed');
+      results.push({ url: target.baseUrl, neighbors: [] });
+    }
+  }
+  return results;
 }
 
 export async function probeOpenWrtWireless(

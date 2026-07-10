@@ -3,10 +3,12 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../lib/store';
 import { confidenceColor, connectionGlyph, deviceMeta } from '../lib/device-ui';
+import { LoadingBlock } from './LoadingSpinner';
 
 /** Sortable/filterable inventory table; a row click opens the detail drawer. */
 export function DeviceTable() {
   const devices = useStore((s) => s.devices);
+  const bootstrapping = useStore((s) => s.bootstrapping);
   const select = useStore((s) => s.select);
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
@@ -51,6 +53,7 @@ export function DeviceTable() {
           ))}
         </select>
       </div>
+      <LoadingBlock loading={bootstrapping && rows.length === 0} label="Loading inventory…" minHeight="12rem">
       <div className="max-h-[calc(2.5rem+3.25rem*50)] overflow-auto">
         <table className="w-full text-left text-sm">
           <thead className="sticky top-0 bg-panelup text-xs uppercase text-muted">
@@ -126,6 +129,7 @@ export function DeviceTable() {
           </tbody>
         </table>
       </div>
+      </LoadingBlock>
     </div>
   );
 }

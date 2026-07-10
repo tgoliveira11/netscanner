@@ -15,3 +15,6 @@ HANDOFF.local.md
 services/inventory/prisma/*.db
 services/inventory/prisma/*.db-journal
 .DS_Store
+# Built native helpers (built by pnpm build:wifiscan / deploy)
+packages/os-abstraction/native/**/wifiscan
+!packages/os-abstraction/native/**/*.swift

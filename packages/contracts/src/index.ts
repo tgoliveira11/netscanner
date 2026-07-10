@@ -8,3 +8,4 @@ export * from './speed-test.js';
 export * from './network-site.js';
 export * from './diagnostics.js';
 export * from './network-control.js';
+export * from './admin.js';

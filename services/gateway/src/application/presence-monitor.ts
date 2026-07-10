@@ -139,19 +139,12 @@ export class PresenceMonitor {
     let alive: boolean;
     let latencyMs: number | null = null;
 
-    // Lease "online" is a reliable positive hint; "offline" from DHCP is often stale — confirm with ping.
-    if (leaseHint === true) {
-      alive = true;
-    } else {
-      const ping = await pingHost(this.deps.runner, device.ip, timeoutMs);
-      alive = ping.alive;
-      latencyMs = ping.latencyMs;
-      if (!alive) {
-        const traffic =
-          this.deps.trafficMonitor?.get(device.ip) ??
-          (device.signals?.traffic as import('@netscanner/contracts').Traffic | undefined);
-        if (trafficSuggestsAlive(traffic)) alive = true;
-      }
+    const ping = await pingHost(this.deps.runner, device.ip, timeoutMs);
+    alive = ping.alive;
+    latencyMs = ping.latencyMs;
+    if (!alive) {
+      const traffic = this.deps.trafficMonitor?.get(device.ip);
+      if (trafficSuggestsAlive(traffic)) alive = true;
     }
 
     if (alive) {
@@ -176,7 +169,10 @@ export class PresenceMonitor {
       return;
     }
 
-    const misses = (this.missCounts.get(device.id) ?? 0) + 1;
+    const misses =
+      !alive && leaseHint === false
+        ? offlineAfter
+        : (this.missCounts.get(device.id) ?? 0) + 1;
     this.missCounts.set(device.id, misses);
     if (!device.isOnline || misses < offlineAfter) return;
 

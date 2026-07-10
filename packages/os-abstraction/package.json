@@ -1,6 +1,6 @@
 {
   "name": "@netscanner/os-abstraction",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -8,7 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:wifiscan": "swiftc -O -o native/macos-wifiscan/wifiscan native/macos-wifiscan/main.swift -framework CoreWLAN"
   },
   "dependencies": {
     "@netscanner/contracts": "workspace:*",

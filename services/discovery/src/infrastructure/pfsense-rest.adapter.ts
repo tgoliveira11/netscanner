@@ -6,13 +6,22 @@ import type { PfSenseTelemetry } from '../domain/pfsense-telemetry.js';
 import { mergePfSenseLeases } from './pfsense-lease-normalize.js';
 import {
   applyInterfaceLabels,
+  buildGatewayGroupInsights,
+  buildHwifToGatewayMap,
   buildInterfaceLabelMap,
+  enrichGatewayGroupMembers,
   enrichLeasesFromStaticMappings,
   mergePfSenseGatewayRows,
   normalizePfSenseArpRow,
+  normalizePfSenseDefaultGateway,
   normalizePfSenseDhcpRows,
+  normalizePfSenseGatewayGroups,
   normalizePfSenseGatewayRow,
   normalizePfSenseInterfaceRow,
+  normalizePfSenseOpenVpnClients,
+  normalizePfSenseSystemStatus,
+  normalizePfSenseWireGuardTunnels,
+  summarizePfSenseEgress,
 } from './pfsense-telemetry-normalize.js';
 import { CompositeLeaseSource } from './composite-lease-source.js';
 
@@ -29,10 +38,17 @@ const DEFAULT_PATHS = {
   gateways: '/api/v2/status/gateways',
   /** Configured gateways (real next-hop when not `dynamic`). Status rows only have srcip. */
   routingGateways: '/api/v2/routing/gateways',
+  routingGatewayDefault: '/api/v2/routing/gateway/default',
+  gatewayGroups: '/api/v2/routing/gateway/groups',
+  gatewayGroupsLegacy: '/api/v2/routing/gateway_groups',
   interfaces: '/api/v2/status/interfaces',
   staticMappings: '/api/v2/services/dhcp_server/static_mappings',
   version: '/api/v2/system/version',
   hostname: '/api/v2/system/hostname',
+  systemStatus: '/api/v2/status/system',
+  openvpnClients: '/api/v2/status/openvpn/clients',
+  wireguardTunnels: '/api/v2/vpn/wireguard/tunnels',
+  firewallStates: '/api/v2/firewall/states?limit=500',
 } as const;
 
 /**
@@ -45,14 +61,16 @@ export class PfSenseRestAdapter implements IRouterLeaseSource {
 
   private telemetry: PfSenseTelemetry | null = null;
   private leases: RouterLease[] = [];
+  private refreshInFlight: Promise<void> | null = null;
+  private lastRefreshAt = 0;
 
   constructor(
     private readonly config: PfSenseConfig,
     private readonly logger: Logger,
   ) {}
 
-  async getLeases(): Promise<RouterLease[]> {
-    await this.refresh();
+  async getLeases(opts?: { maxAgeMs?: number }): Promise<RouterLease[]> {
+    await this.refresh(opts);
     return this.leases;
   }
 
@@ -60,19 +78,54 @@ export class PfSenseRestAdapter implements IRouterLeaseSource {
     return this.telemetry;
   }
 
-  private async refresh(): Promise<void> {
+  /** Shared refresh with optional TTL — concurrent callers await the same in-flight request. */
+  private async refresh(opts?: { maxAgeMs?: number }): Promise<void> {
+    const maxAge = opts?.maxAgeMs ?? 0;
+    if (maxAge > 0 && this.telemetry && Date.now() - this.lastRefreshAt < maxAge) {
+      return;
+    }
+    if (this.refreshInFlight) return this.refreshInFlight;
+    this.refreshInFlight = this.doRefresh().finally(() => {
+      this.refreshInFlight = null;
+    });
+    return this.refreshInFlight;
+  }
+
+  private async doRefresh(): Promise<void> {
     const timeout = this.config.timeoutMs ?? 8000;
-    const [dhcpRaw, arpRaw, gwRaw, routingGwRaw, ifRaw, staticRaw, versionRaw, hostnameRaw] =
-      await Promise.all([
-        this.getPath(this.config.leasesPath, timeout),
-        this.getPath(DEFAULT_PATHS.arp, timeout),
-        this.getPath(DEFAULT_PATHS.gateways, timeout),
-        this.getPath(DEFAULT_PATHS.routingGateways, timeout).catch(() => []),
-        this.getPath(DEFAULT_PATHS.interfaces, timeout),
-        this.getPath(DEFAULT_PATHS.staticMappings, timeout).catch(() => []),
-        this.getPathObject(DEFAULT_PATHS.version, timeout).catch(() => null),
-        this.getPathObject(DEFAULT_PATHS.hostname, timeout).catch(() => null),
-      ]);
+    const [
+      dhcpRaw,
+      arpRaw,
+      gwRaw,
+      routingGwRaw,
+      defaultGwRaw,
+      groupRaw,
+      ifRaw,
+      staticRaw,
+      versionRaw,
+      hostnameRaw,
+      systemRaw,
+      openvpnRaw,
+      wireguardRaw,
+      statesRaw,
+    ] = await Promise.all([
+      this.getPath(this.config.leasesPath, timeout),
+      this.getPath(DEFAULT_PATHS.arp, timeout),
+      this.getPath(DEFAULT_PATHS.gateways, timeout),
+      this.getPath(DEFAULT_PATHS.routingGateways, timeout).catch(() => []),
+      this.getPathObject(DEFAULT_PATHS.routingGatewayDefault, timeout).catch(() => null),
+      this.getPath(DEFAULT_PATHS.gatewayGroups, timeout)
+        .catch(() => this.getPath(DEFAULT_PATHS.gatewayGroupsLegacy, timeout))
+        .catch(() => []),
+      this.getPath(DEFAULT_PATHS.interfaces, timeout),
+      this.getPath(DEFAULT_PATHS.staticMappings, timeout).catch(() => []),
+      this.getPathObject(DEFAULT_PATHS.version, timeout).catch(() => null),
+      this.getPathObject(DEFAULT_PATHS.hostname, timeout).catch(() => null),
+      this.getPathObject(DEFAULT_PATHS.systemStatus, timeout).catch(() => null),
+      this.getPath(DEFAULT_PATHS.openvpnClients, timeout).catch(() => []),
+      this.getPath(DEFAULT_PATHS.wireguardTunnels, timeout).catch(() => []),
+      this.getPath(DEFAULT_PATHS.firewallStates, timeout).catch(() => []),
+    ]);
 
     const dhcp = normalizePfSenseDhcpRows(this.extractArray(dhcpRaw));
     const arp = this.extractArray(arpRaw)
@@ -88,19 +141,40 @@ export class PfSenseRestAdapter implements IRouterLeaseSource {
     const statusGateways = this.extractArray(gwRaw).map((r) => normalizePfSenseGatewayRow(r));
     const configGateways = this.extractArray(routingGwRaw).map((r) => normalizePfSenseGatewayRow(r));
     const gateways = mergePfSenseGatewayRows(statusGateways, configGateways);
+    const defaultGateway = normalizePfSenseDefaultGateway(defaultGwRaw);
+    const gatewayGroups = enrichGatewayGroupMembers(
+      normalizePfSenseGatewayGroups(this.extractArray(groupRaw)),
+      gateways,
+    );
     const version = strField(versionRaw, 'version') ?? strField(versionRaw, 'base');
     const hostname =
       strField(hostnameRaw, 'hostname') ??
       (typeof hostnameRaw === 'string' ? hostnameRaw : null);
+    const system = normalizePfSenseSystemStatus(systemRaw, version, hostname);
+    const vpnClients = [
+      ...normalizePfSenseOpenVpnClients(this.extractArray(openvpnRaw)),
+      ...normalizePfSenseWireGuardTunnels(this.extractArray(wireguardRaw)),
+    ];
+    const hwifToGateway = buildHwifToGatewayMap(interfaces, gateways);
+    const { egress, stateCount } = summarizePfSenseEgress(this.extractArray(statesRaw), hwifToGateway);
+    const gatewayGroupInsights = buildGatewayGroupInsights(gatewayGroups, gateways, egress);
 
     this.leases = merged;
     this.telemetry = {
       version,
       hostname,
+      system,
       gateways,
       interfaces,
+      defaultGateway,
+      gatewayGroups,
+      gatewayGroupInsights,
+      vpnClients,
+      egress,
+      stateCount,
       fetchedAt: new Date().toISOString(),
     };
+    this.lastRefreshAt = Date.now();
 
     this.logger.info(
       {

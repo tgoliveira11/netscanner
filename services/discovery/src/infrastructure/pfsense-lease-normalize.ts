@@ -18,7 +18,7 @@ export function normalizePfSenseLease(r: Record<string, unknown>): RouterLease |
   );
   const online =
     r['online'] === true ||
-    (state ? /online|active|bound/i.test(state) && !/offline/i.test(state) : true);
+    (state ? /online|active|bound/i.test(state) && !/offline|idle/i.test(state) : false);
 
   return {
     ip: ip ?? '',
@@ -49,7 +49,7 @@ export function normalizePfSenseArpLease(r: {
     hostname: r.hostname ?? null,
     interface: r.interface ?? null,
     description: null,
-    online: true,
+    online: false,
   };
 }
 
@@ -74,7 +74,7 @@ export function mergePfSenseLeases(dhcp: RouterLease[], arp: RouterLease[]): Rou
       hostname: lease.hostname ?? existing.hostname,
       interface: lease.interface ?? existing.interface,
       description: lease.description ?? existing.description,
-      online: lease.online || existing.online,
+      online: lease.online,
     });
   }
   return [...byKey.values()];

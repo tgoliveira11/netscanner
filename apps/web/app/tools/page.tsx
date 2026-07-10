@@ -1,17 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AppNav } from '../../components/AppNav';
 import { Header } from '../../components/Header';
+import { WifiAnalyzerPanel } from '../../components/WifiAnalyzerPanel';
 import { api } from '../../lib/api';
-import type { CameraScanResponse, WifiScanResponse } from '@netscanner/contracts';
+import type { CameraScanResponse, PingResponse, TracerouteResponse, WifiScanResponse } from '@netscanner/contracts';
 
 export default function ToolsPage() {
   const [wifi, setWifi] = useState<WifiScanResponse | null>(null);
   const [cameras, setCameras] = useState<CameraScanResponse | null>(null);
+  const [pingTarget, setPingTarget] = useState('');
+  const [pingResult, setPingResult] = useState<PingResponse | null>(null);
+  const [traceTarget, setTraceTarget] = useState('');
+  const [traceResult, setTraceResult] = useState<TracerouteResponse | null>(null);
   const [dnsName, setDnsName] = useState('');
   const [dnsResult, setDnsResult] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>('wifi');
   const [error, setError] = useState<string | null>(null);
   const [travelMode, setTravelMode] = useState(false);
 
@@ -35,7 +39,7 @@ export default function ToolsPage() {
     setBusy('camera');
     setError(null);
     try {
-      setCameras(await api.diagnosticsCameraScan());
+      setCameras(await api.diagnosticsCameraScan(travelMode ? { travelMode: true } : {}));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -57,54 +61,121 @@ export default function ToolsPage() {
     }
   };
 
+  const runPing = async () => {
+    if (!pingTarget.trim()) return;
+    setBusy('ping');
+    setError(null);
+    try {
+      setPingResult(await api.diagnosticsPing(pingTarget.trim()));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runTraceroute = async () => {
+    if (!traceTarget.trim()) return;
+    setBusy('trace');
+    setError(null);
+    try {
+      setTraceResult(await api.diagnosticsTraceroute(traceTarget.trim()));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <main className="mx-auto w-full max-w-[1920px] space-y-4 p-4 md:p-5">
       <Header />
-      <AppNav />
       <h1 className="text-lg font-semibold text-slate-100">Tools</h1>
       {error && <p className="text-sm text-bad">{error}</p>}
 
+      <WifiAnalyzerPanel wifi={wifi} busy={busy === 'wifi'} onRefresh={() => void loadWifi()} />
+
       <section className="rounded-xl border border-edge bg-panel p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-slate-200">Wi‑Fi scanner</h2>
-          <button type="button" onClick={() => void loadWifi()} disabled={busy === 'wifi'} className="btn btn-ghost text-xs">
-            {busy === 'wifi' ? 'Scanning…' : 'Refresh'}
+        <h2 className="mb-3 text-sm font-semibold text-slate-200">Ping</h2>
+        <div className="flex gap-2">
+          <input
+            value={pingTarget}
+            onChange={(e) => setPingTarget(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void runPing()}
+            placeholder="192.168.1.1 or hostname"
+            className="min-w-0 flex-1 rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <button type="button" onClick={() => void runPing()} disabled={busy === 'ping'} className="btn btn-primary text-xs">
+            {busy === 'ping' ? 'Pinging…' : 'Ping'}
           </button>
         </div>
-        {wifi && (
+        {pingResult && (
           <>
-            <p className="mb-2 text-xs text-muted">
-              Connected: {wifi.currentSsid ?? '—'} · {wifi.aps.length} APs visible
+            <p className="mt-2 text-xs text-muted">
+              {pingResult.alive ? (
+                <span className="text-good">
+                  Reachable · {pingResult.packetsReceived}/{pingResult.packetsSent} replies
+                  {pingResult.avgLatencyMs != null ? ` · avg ${pingResult.avgLatencyMs.toFixed(1)} ms` : ''}
+                </span>
+              ) : (
+                <span className="text-bad">No reply · {pingResult.packetsReceived}/{pingResult.packetsSent} replies</span>
+              )}
             </p>
-            <div className="overflow-auto rounded-lg border border-edge">
-              <table className="w-full min-w-[28rem] text-left text-xs">
-                <thead className="border-b border-edge bg-panelup text-muted">
-                  <tr>
-                    <th className="px-3 py-2">SSID</th>
-                    <th className="px-3 py-2">BSSID</th>
-                    <th className="px-3 py-2">Ch</th>
-                    <th className="px-3 py-2">RSSI</th>
-                    <th className="px-3 py-2">Security</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {wifi.aps.map((ap) => (
-                    <tr key={`${ap.ssid}-${ap.bssid ?? ap.channel}`} className="border-b border-edge/50">
-                      <td className="px-3 py-1.5">{ap.ssid || '(hidden)'}</td>
-                      <td className="px-3 py-1.5 font-mono text-muted">{ap.bssid ?? '—'}</td>
-                      <td className="px-3 py-1.5">{ap.channel ?? '—'}</td>
-                      <td className="px-3 py-1.5">{ap.rssi != null ? `${ap.rssi} dBm` : '—'}</td>
-                      <td className="px-3 py-1.5 text-muted">{ap.security ?? '—'}</td>
+            <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-edge bg-panelup p-3 text-xs text-slate-300">
+              {pingResult.output.trim() || 'No output'}
+            </pre>
+          </>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-edge bg-panel p-4">
+        <h2 className="mb-3 text-sm font-semibold text-slate-200">Traceroute</h2>
+        <div className="flex gap-2">
+          <input
+            value={traceTarget}
+            onChange={(e) => setTraceTarget(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void runTraceroute()}
+            placeholder="8.8.8.8 or hostname"
+            className="min-w-0 flex-1 rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <button
+            type="button"
+            onClick={() => void runTraceroute()}
+            disabled={busy === 'trace'}
+            className="btn btn-primary text-xs"
+          >
+            {busy === 'trace' ? 'Tracing…' : 'Trace'}
+          </button>
+        </div>
+        {traceResult && (
+          <>
+            {traceResult.hops.length > 0 && (
+              <div className="mt-2 overflow-auto rounded-lg border border-edge">
+                <table className="w-full min-w-[24rem] text-left text-xs">
+                  <thead className="border-b border-edge bg-panelup text-muted">
+                    <tr>
+                      <th className="px-3 py-2">Hop</th>
+                      <th className="px-3 py-2">Host</th>
+                      <th className="px-3 py-2">IP</th>
+                      <th className="px-3 py-2">Latency</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {wifi.channelCollisions.length > 0 && (
-              <p className="mt-2 text-xs text-warn">
-                Channel overlap: {wifi.channelCollisions.map((c) => `ch${c.channel}×${c.count}`).join(', ')}
-              </p>
+                  </thead>
+                  <tbody>
+                    {traceResult.hops.map((hop) => (
+                      <tr key={hop.hop} className="border-b border-edge/50">
+                        <td className="px-3 py-1.5">{hop.hop}</td>
+                        <td className="px-3 py-1.5 font-mono text-muted">{hop.host ?? '—'}</td>
+                        <td className="px-3 py-1.5 font-mono">{hop.ip ?? '—'}</td>
+                        <td className="px-3 py-1.5">{hop.latencyMs != null ? `${hop.latencyMs.toFixed(1)} ms` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
+            <pre className="mt-2 max-h-48 overflow-auto rounded-lg border border-edge bg-panelup p-3 text-xs text-slate-300">
+              {traceResult.output.trim() || 'No output'}
+            </pre>
           </>
         )}
       </section>
@@ -115,6 +186,7 @@ export default function ToolsPage() {
           <input
             value={dnsName}
             onChange={(e) => setDnsName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void lookupDns()}
             placeholder="example.com"
             className="min-w-0 flex-1 rounded-lg border border-edge bg-panelup px-3 py-2 text-sm outline-none focus:border-accent"
           />
@@ -133,7 +205,9 @@ export default function ToolsPage() {
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-semibold text-slate-200">Camera heuristics + RTSP probe</h2>
-            <p className="text-xs text-muted">Travel mode: scan without assuming home inventory context.</p>
+            <p className="text-xs text-muted">
+              Scans inventory for camera-like devices (RTSP, Alexa/Ring cloud patterns). Travel mode also probes open RTSP ports.
+            </p>
           </div>
           <label className="flex items-center gap-2 text-xs text-muted">
             <input type="checkbox" checked={travelMode} onChange={(e) => setTravelMode(e.target.checked)} />

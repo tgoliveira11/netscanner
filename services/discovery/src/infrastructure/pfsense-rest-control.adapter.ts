@@ -2,7 +2,15 @@ import type { Logger } from '@netscanner/logger';
 import {
   NS_ALIAS_AUTOBLOCK,
   NS_ALIAS_BLOCK,
+  NS_ALIAS_DNS_BLOCK,
+  NS_ALIAS_DNS_SRC,
+  NS_ALIAS_DEST_BLOCK,
+  NS_ALIAS_DEST_SRC,
   NS_ALIAS_PAUSED,
+  NS_ALIAS_ROUTE_LB,
+  NS_ALIAS_ROUTE_VPN,
+  NS_ALIAS_ROUTE_WAN,
+  routeAliasForGateway,
   type ControlBootstrap,
   type ControlVerifyCheck,
   type ControlVerifyResult,
@@ -10,7 +18,20 @@ import {
 } from '@netscanner/contracts';
 import { PfSenseHttpClient, type PfSenseHttpConfig } from './pfsense-http-client.js';
 
-export type AliasName = typeof NS_ALIAS_BLOCK | typeof NS_ALIAS_PAUSED | typeof NS_ALIAS_AUTOBLOCK | 'NS_LIMIT';
+export type AliasName = string;
+
+const BOOTSTRAP_ALIASES: Array<{ name: string; type: string }> = [
+  { name: NS_ALIAS_BLOCK, type: 'host' },
+  { name: NS_ALIAS_PAUSED, type: 'host' },
+  { name: NS_ALIAS_AUTOBLOCK, type: 'host' },
+  { name: NS_ALIAS_DNS_BLOCK, type: 'url' },
+  { name: NS_ALIAS_DNS_SRC, type: 'host' },
+  { name: NS_ALIAS_DEST_BLOCK, type: 'network' },
+  { name: NS_ALIAS_DEST_SRC, type: 'host' },
+  { name: NS_ALIAS_ROUTE_WAN, type: 'host' },
+  { name: NS_ALIAS_ROUTE_LB, type: 'host' },
+  { name: NS_ALIAS_ROUTE_VPN, type: 'host' },
+];
 
 /** pfSense REST write operations for NetScanner network control. */
 export class PfSenseRestControlAdapter {
@@ -25,7 +46,7 @@ export class PfSenseRestControlAdapter {
 
   async checkBootstrap(): Promise<ControlBootstrap> {
     const aliases: Record<string, boolean> = {};
-    for (const name of [NS_ALIAS_BLOCK, NS_ALIAS_PAUSED, NS_ALIAS_AUTOBLOCK]) {
+    for (const { name } of BOOTSTRAP_ALIASES) {
       aliases[name] = await this.aliasExists(name);
     }
     const ready = Boolean(aliases[NS_ALIAS_BLOCK] && aliases[NS_ALIAS_PAUSED]);
@@ -78,6 +99,9 @@ export class PfSenseRestControlAdapter {
     this.verifyBlockRule(rules, push);
     this.verifyAliasRule(rules, 'PAUSE', NS_ALIAS_PAUSED, push);
     this.verifyAliasRule(rules, 'AUTOBLOCK', NS_ALIAS_AUTOBLOCK, push);
+    this.verifyDnsBlockRule(rules, push);
+    this.verifyDestBlockRule(rules, push);
+    this.verifyRouteRules(rules, push);
     this.verifyBandwidthRules(rules, push);
     await this.verifyLimiters(push);
     await this.verifyAliasWrite(push);
@@ -87,15 +111,15 @@ export class PfSenseRestControlAdapter {
   }
 
   async bootstrap(): Promise<ControlBootstrap> {
-    for (const name of [NS_ALIAS_BLOCK, NS_ALIAS_PAUSED, NS_ALIAS_AUTOBLOCK]) {
+    for (const { name, type } of BOOTSTRAP_ALIASES) {
       if (!(await this.aliasExists(name))) {
         await this.client.post('/api/v2/firewall/alias', {
           name,
-          type: 'host',
+          type,
           address: [],
           descr: `NetScanner ${name}`,
         });
-        this.logger.info({ name }, 'created pfSense alias');
+        this.logger.info({ name, type }, 'created pfSense alias');
       }
     }
     if (!(await this.limiterExists('NS_LIMIT'))) {
@@ -110,7 +134,124 @@ export class PfSenseRestControlAdapter {
         this.logger.warn({ error }, 'limiter bootstrap skipped (may need manual shaper setup)');
       }
     }
+    await this.ensureDnsDestRules();
     return this.checkBootstrap();
+  }
+
+  /** Ensure floating block rules for DNS/dest aliases exist. */
+  async ensureDnsDestRules(): Promise<void> {
+    await this.ensureFloatingRule({
+      type: 'block',
+      descr: 'NetScanner DNS BLOCK',
+      src: NS_ALIAS_DNS_SRC,
+      dst: NS_ALIAS_DNS_BLOCK,
+    });
+    await this.ensureFloatingRule({
+      type: 'block',
+      descr: 'NetScanner DEST BLOCK',
+      src: NS_ALIAS_DEST_SRC,
+      dst: NS_ALIAS_DEST_BLOCK,
+    });
+  }
+
+  /**
+   * Ensure host alias + floating pass rule with Gateway column for policy routing.
+   * Returns the alias name used as source.
+   */
+  async ensureRouteGateway(gatewayName: string): Promise<string> {
+    const alias = routeAliasForGateway(gatewayName);
+    await this.ensureHostAlias(alias, `NetScanner route → ${gatewayName}`);
+    await this.ensureFloatingRule({
+      type: 'pass',
+      descr: `NetScanner ROUTE ${gatewayName}`,
+      src: alias,
+      dst: 'any',
+      gateway: gatewayName,
+    });
+    return alias;
+  }
+
+  async ensureHostAlias(name: string, descr: string): Promise<void> {
+    if (await this.aliasExists(name)) return;
+    await this.client.post('/api/v2/firewall/alias', {
+      name,
+      type: 'host',
+      address: [],
+      descr,
+    });
+    this.logger.info({ name }, 'created pfSense route alias');
+  }
+
+  /** List all NetScanner route aliases (NS_RT_* and legacy NS_ROUTE_*). */
+  async listRouteAliases(): Promise<string[]> {
+    const rows = this.client.extractArray(await this.client.get('/api/v2/firewall/aliases'));
+    return rows
+      .map((r) => String(r.name ?? ''))
+      .filter((n) => n.startsWith('NS_RT_') || n.startsWith('NS_ROUTE_'));
+  }
+
+  private async ensureFloatingRule(opts: {
+    type: 'block' | 'pass';
+    descr: string;
+    src: string;
+    dst: string;
+    gateway?: string;
+  }): Promise<void> {
+    const rules = this.client.extractArray(await this.client.get('/api/v2/firewall/rules'));
+    const existing = rules.find(
+      (r) =>
+        String(r.descr ?? '') === opts.descr ||
+        (String(r.descr ?? '').includes(opts.descr.replace(/^NetScanner\s+/i, '')) &&
+          String(r.source ?? r.src ?? '') === opts.src),
+    );
+    if (existing) {
+      const gw = String(existing.gateway ?? '');
+      if (opts.gateway && gw && gw !== opts.gateway) {
+        this.logger.warn(
+          { descr: opts.descr, existingGateway: gw, wanted: opts.gateway },
+          'route rule exists with different gateway — leaving as-is',
+        );
+      }
+      return;
+    }
+    const body: Record<string, unknown> = {
+      type: opts.type,
+      floating: true,
+      quick: true,
+      interface: [],
+      direction: 'any',
+      ipprotocol: 'inet',
+      protocol: 'any',
+      src: opts.src,
+      dst: opts.dst,
+      descr: opts.descr,
+      disabled: false,
+      log: false,
+    };
+    if (opts.gateway) body.gateway = opts.gateway;
+    try {
+      await this.client.post('/api/v2/firewall/rule', body);
+      this.logger.info({ descr: opts.descr, gateway: opts.gateway }, 'created pfSense floating rule');
+    } catch (error) {
+      // Some pfSense builds require at least one interface on floating rules.
+      try {
+        await this.client.post('/api/v2/firewall/rule', {
+          ...body,
+          interface: ['wan', 'lan', 'opt1', 'opt2', 'opt3', 'opt4', 'opt5', 'opt6'],
+        });
+        this.logger.info({ descr: opts.descr }, 'created pfSense floating rule (with interfaces)');
+      } catch (retryError) {
+        this.logger.warn(
+          {
+            descr: opts.descr,
+            error: retryError instanceof Error ? retryError.message : String(retryError),
+            firstError: error instanceof Error ? error.message : String(error),
+          },
+          'failed to create floating rule — create manually in pfSense',
+        );
+        throw retryError;
+      }
+    }
   }
 
   async addToAlias(alias: AliasName, address: string): Promise<void> {
@@ -133,6 +274,15 @@ export class PfSenseRestControlAdapter {
   async listAliasAddresses(alias: AliasName): Promise<string[]> {
     const entry = await this.getAlias(alias);
     return entry ? this.aliasAddresses(entry) : [];
+  }
+
+  /** Replace alias contents (used when syncing policy maps). */
+  async setAliasAddresses(alias: AliasName, addresses: string[]): Promise<void> {
+    const entry = await this.getAlias(alias);
+    if (!entry) throw new Error(`alias ${alias} not found — run bootstrap first`);
+    const unique = [...new Set(addresses.map((a) => a.trim()).filter(Boolean))];
+    await this.patchAliasAddresses(entry, unique);
+    this.logger.info({ alias, count: unique.length }, 'pfSense alias synced');
   }
 
   async createDhcpReservation(req: DhcpReservationRequest): Promise<Record<string, unknown>> {
@@ -256,6 +406,14 @@ export class PfSenseRestControlAdapter {
     if (rule.disabled) {
       push({ id: 'rule-block-disabled', label: 'Block rule enabled', status: 'fail', detail: 'Rule is disabled' });
     }
+    if (rule.floating && rule.quick !== true) {
+      push({
+        id: 'rule-block-quick',
+        label: 'Block rule quick',
+        status: 'fail',
+        detail: 'Floating rule must have Quick enabled — otherwise interface pass rules run first and block is ignored',
+      });
+    }
   }
 
   private verifyAliasRule(
@@ -292,6 +450,84 @@ export class PfSenseRestControlAdapter {
     } else {
       push({ id, label: `${descrToken} rule (${alias})`, status: 'warn', detail: `Source: ${src}` });
     }
+    if (rule.floating && rule.quick !== true) {
+      push({
+        id: `${id}-quick`,
+        label: `${descrToken} rule quick`,
+        status: 'fail',
+        detail: 'Enable Quick on this floating block rule',
+      });
+    }
+  }
+
+  private verifyDnsBlockRule(rules: Record<string, unknown>[], push: (c: ControlVerifyCheck) => void): void {
+    const matches = rules.filter(
+      (r) =>
+        r.type === 'block' &&
+        /NetScanner\s+DNS/i.test(String(r.descr ?? '')) &&
+        String(r.destination ?? '').includes(NS_ALIAS_DNS_BLOCK),
+    );
+    if (!matches.length) {
+      push({
+        id: 'rule-dns-block',
+        label: 'DNS block rule (NS_DNS_BLOCK)',
+        status: 'warn',
+        detail:
+          'Create floating block: source NS_DNS_SRC (or any), destination NS_DNS_BLOCK, Quick enabled. FQDN aliases refresh periodically.',
+      });
+      return;
+    }
+    const rule = matches[0];
+    if (!rule) return;
+    push({
+      id: 'rule-dns-block',
+      label: 'DNS block rule (NS_DNS_BLOCK)',
+      status: 'pass',
+      detail: `Source ${String(rule.source ?? 'any')}`,
+    });
+  }
+
+  private verifyDestBlockRule(rules: Record<string, unknown>[], push: (c: ControlVerifyCheck) => void): void {
+    const matches = rules.filter(
+      (r) =>
+        r.type === 'block' &&
+        /NetScanner\s+DEST/i.test(String(r.descr ?? '')) &&
+        String(r.destination ?? '').includes(NS_ALIAS_DEST_BLOCK),
+    );
+    if (!matches.length) {
+      push({
+        id: 'rule-dest-block',
+        label: 'Dest block rule (NS_DEST_BLOCK)',
+        status: 'warn',
+        detail: 'Create floating block: source NS_DEST_SRC, destination NS_DEST_BLOCK',
+      });
+      return;
+    }
+    push({ id: 'rule-dest-block', label: 'Dest block rule (NS_DEST_BLOCK)', status: 'pass' });
+  }
+
+  private verifyRouteRules(rules: Record<string, unknown>[], push: (c: ControlVerifyCheck) => void): void {
+    const routeRules = rules.filter(
+      (r) =>
+        r.type === 'pass' &&
+        /NetScanner\s+ROUTE/i.test(String(r.descr ?? '')) &&
+        Boolean(r.gateway),
+    );
+    if (!routeRules.length) {
+      push({
+        id: 'rule-route',
+        label: 'Route policy rules (NS_RT_*)',
+        status: 'warn',
+        detail: 'No NetScanner ROUTE pass rules yet — assigning a gateway in Policy will create them',
+      });
+      return;
+    }
+    push({
+      id: 'rule-route',
+      label: 'Route policy rules (NS_RT_*)',
+      status: 'pass',
+      detail: routeRules.map((r) => `${String(r.gateway)} ← ${String(r.source ?? r.src)}`).join('; '),
+    });
   }
 
   private verifyBandwidthRules(rules: Record<string, unknown>[], push: (c: ControlVerifyCheck) => void): void {

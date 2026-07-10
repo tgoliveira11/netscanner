@@ -9,7 +9,6 @@ export function DeviceControl({ device }: { device: Device }) {
   const [bootstrapReady, setBootstrapReady] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dhcpHostname, setDhcpHostname] = useState(device.hostname ?? device.label ?? '');
 
   const refresh = useCallback(async () => {
     try {
@@ -107,33 +106,6 @@ export function DeviceControl({ device }: { device: Device }) {
           Pause 1h
         </button>
       </div>
-      {device.mac && (
-        <div className="space-y-1 border-t border-edge pt-3">
-          <div className="text-xs text-muted">DHCP static mapping</div>
-          <input
-            value={dhcpHostname}
-            onChange={(e) => setDhcpHostname(e.target.value)}
-            placeholder="Hostname"
-            className="w-full rounded-lg border border-edge bg-panelup px-3 py-1.5 text-xs outline-none focus:border-accent"
-          />
-          <button
-            type="button"
-            disabled={busy}
-            className="btn btn-ghost text-xs"
-            onClick={() =>
-              void act(() =>
-                api.controlDhcpReserve({
-                  mac: device.mac!,
-                  ip: device.ip,
-                  hostname: dhcpHostname || undefined,
-                }),
-              )
-            }
-          >
-            Reserve IP
-          </button>
-        </div>
-      )}
       {error && <p className="text-xs text-bad">{error}</p>}
     </section>
   );

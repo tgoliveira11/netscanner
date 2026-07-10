@@ -3,6 +3,7 @@ import {
   deriveIspUsername,
   parseCompalWirelessNetworkIds,
   parseCompalWirelessStatusJson,
+  parseCompalWirelessStatusBody,
 } from './compal-luci-crypto.js';
 
 describe('deriveIspUsername', () => {
@@ -29,6 +30,23 @@ describe('parseCompalWirelessNetworkIds', () => {
   it('falls back to wireless_status poll path', () => {
     const html = `XHR.poll(5, '/cgi-bin/luci/;stok=abc/admin/network/wireless_status/wifi0.network1,wifi1.network1', null,`;
     expect(parseCompalWirelessNetworkIds(html)).toEqual(['wifi0.network1', 'wifi1.network1']);
+  });
+});
+
+describe('parseCompalWirelessStatusBody', () => {
+  it('parses bare JSON array', () => {
+    const raw = '[{"ssid":"Guest","up":true}]';
+    expect(parseCompalWirelessStatusBody(raw)).toEqual([{ ssid: 'Guest', up: true }]);
+  });
+
+  it('extracts JSON array from HTML wrapper', () => {
+    const raw = '<html>OK [{"ssid":"IoT","up":false}]</html>';
+    expect(parseCompalWirelessStatusBody(raw)).toEqual([{ ssid: 'IoT', up: false }]);
+  });
+
+  it('returns null for login HTML', () => {
+    const raw = '<form name="login"><input name="luci_username"></form>';
+    expect(parseCompalWirelessStatusBody(raw)).toBeNull();
   });
 });
 

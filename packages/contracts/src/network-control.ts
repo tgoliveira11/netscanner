@@ -3,6 +3,20 @@ import { z } from 'zod';
 export const NS_ALIAS_BLOCK = 'NS_BLOCK';
 export const NS_ALIAS_PAUSED = 'NS_PAUSED';
 export const NS_ALIAS_AUTOBLOCK = 'NS_AUTOBLOCK';
+/** FQDN/url entries — resolved periodically by pfSense. */
+export const NS_ALIAS_DNS_BLOCK = 'NS_DNS_BLOCK';
+/** Host IPs subject to DNS block rules (source alias). */
+export const NS_ALIAS_DNS_SRC = 'NS_DNS_SRC';
+/** Network/host destinations to block (CIDR or IP, optional :port in audit only). */
+export const NS_ALIAS_DEST_BLOCK = 'NS_DEST_BLOCK';
+export const NS_ALIAS_DEST_SRC = 'NS_DEST_SRC';
+/** Policy routing: device IP in exactly one route alias (floating pass + gateway on pfSense). */
+export const NS_ALIAS_ROUTE_WAN = 'NS_ROUTE_WAN';
+export const NS_ALIAS_ROUTE_LB = 'NS_ROUTE_LB';
+export const NS_ALIAS_ROUTE_VPN = 'NS_ROUTE_VPN';
+
+export const RouteProfileSchema = z.enum(['wan', 'lb', 'vpn', 'default']);
+export type RouteProfile = z.infer<typeof RouteProfileSchema>;
 
 export const ControlTargetSchema = z.object({
   deviceId: z.string().optional(),
@@ -46,14 +60,69 @@ export const ParentalScheduleRequestSchema = z.object({
 });
 export type ParentalScheduleRequest = z.infer<typeof ParentalScheduleRequestSchema>;
 
+export const DnsBlockRequestSchema = ControlTargetSchema.extend({
+  domain: z.string().min(1).max(253).transform((d) => d.trim().toLowerCase().replace(/^\.+/, '')),
+});
+export type DnsBlockRequest = z.infer<typeof DnsBlockRequestSchema>;
+
+export const DestBlockRequestSchema = ControlTargetSchema.extend({
+  /** IPv4, CIDR, or host — optional :port stored in audit; pfSense rule may need manual port match. */
+  destination: z.string().min(1).max(80),
+});
+export type DestBlockRequest = z.infer<typeof DestBlockRequestSchema>;
+
+export const RoutePolicyRequestSchema = ControlTargetSchema.extend({
+  /** pfSense gateway or gateway-group name; null clears policy routing. */
+  gatewayName: z.string().max(80).nullable().optional(),
+  /** Legacy shortcut — resolved to a gateway when gatewayName omitted. */
+  profile: RouteProfileSchema.optional(),
+}).refine((d) => d.gatewayName !== undefined || d.profile !== undefined, {
+  message: 'gatewayName or profile required',
+});
+export type RoutePolicyRequest = z.infer<typeof RoutePolicyRequestSchema>;
+
+export const RouteOptionSchema = z.object({
+  name: z.string(),
+  kind: z.enum(['wan', 'lb', 'vpn', 'group', 'other']),
+  label: z.string(),
+  online: z.boolean().optional(),
+  description: z.string().nullable().optional(),
+});
+export type RouteOption = z.infer<typeof RouteOptionSchema>;
+
 export const ControlStatusSchema = z.object({
   blocked: z.boolean(),
   paused: z.boolean(),
   pauseExpiresAt: z.string().nullable(),
   bandwidthLimited: z.boolean(),
   dhcpReserved: z.boolean(),
+  dnsBlocked: z.boolean(),
+  dnsBlockedDomains: z.array(z.string()),
+  destBlocked: z.boolean(),
+  destBlockedEntries: z.array(z.string()),
+  egressRoute: RouteProfileSchema.nullable(),
+  egressGateway: z.string().nullable(),
 });
 export type ControlStatus = z.infer<typeof ControlStatusSchema>;
+
+/** pfSense host alias for policy routing to a specific gateway/group. */
+export function routeAliasForGateway(gatewayName: string): string {
+  const sanitized = gatewayName
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+  const body = (sanitized || 'GW').slice(0, 24);
+  return `NS_RT_${body}`;
+}
+
+export function classifyGatewayKind(name: string): RouteOption['kind'] {
+  const n = name.toUpperCase();
+  if (n === 'LB_WAN' || n.startsWith('LB_')) return 'lb';
+  if (/VPN|OVPN|WIREGUARD|WG_|SURFSHARK|SSVPN|TUN_/.test(n)) return 'vpn';
+  if (/^WAN|WAN_DHCP|CLARO|VIVO|ISP/.test(n)) return 'wan';
+  if (/FAILOVER|_GROUP/.test(n)) return 'group';
+  return 'other';
+}
 
 export const ControlBootstrapSchema = z.object({
   ready: z.boolean(),

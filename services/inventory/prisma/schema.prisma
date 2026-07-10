@@ -95,8 +95,17 @@ model SpeedTestRecord {
   server        String   @default("cloudflare")
   trigger       String   @default("background")
   error         String?
+  /** agent = default route from Mac; wan = bound to pfSense WAN iface via SSH. */
+  testKind      String   @default("agent")
+  wanGateway    String?
+  wanInterface  String?
+  /** pfSense gateway name when testKind=agent (observed egress at test time). */
+  egressGateway String?
+  egressRoute   String?
 
   @@index([siteId, measuredAt])
+  @@index([testKind, measuredAt])
+  @@index([wanGateway, measuredAt])
 }
 
 /** Audit trail for pfSense control actions (block, pause, DHCP, etc.). */
@@ -137,4 +146,23 @@ model ParentalScheduleRecord {
   enabled           Boolean  @default(true)
   pfsenseScheduleId String?
   createdAt         DateTime @default(now())
+}
+
+/**
+ * Persisted per-device control policies (route / DNS / dest).
+ * kind=route → at most one row per device (value = pfSense gateway or group name).
+ * kind=dns|dest → many rows (value = domain or destination).
+ */
+model DevicePolicyRecord {
+  id        String   @id
+  siteId    String   @default("00000000-0000-4000-8000-000000000001")
+  deviceId  String
+  kind      String
+  value     String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([deviceId, kind, value])
+  @@index([deviceId, kind])
+  @@index([kind])
 }

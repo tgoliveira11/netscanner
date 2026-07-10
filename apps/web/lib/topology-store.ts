@@ -23,14 +23,18 @@ interface TopologyState {
   view: ViewTransform;
   viewInitialized: boolean;
   loading: boolean;
+  refreshing: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
   subscribers: number;
+  backgroundPolling: boolean;
   fetchTopology: (opts?: { force?: boolean }) => Promise<void>;
   applyLayout: (computed: LayoutResult) => void;
   setView: (view: ViewTransform | ((cur: ViewTransform) => ViewTransform)) => void;
   markViewInitialized: () => void;
   resetViewState: () => void;
   subscribePage: () => () => void;
+  startBackgroundPolling: () => void;
+  stopBackgroundPolling: () => void;
   invalidateStructure: () => void;
 }
 
@@ -40,13 +44,16 @@ export const useTopologyStore = create<TopologyState>((set, get) => ({
   view: { scale: 1, panX: 0, panY: 0 },
   viewInitialized: false,
   loading: false,
+  refreshing: false,
   pollTimer: null,
   subscribers: 0,
+  backgroundPolling: false,
 
   fetchTopology: async ({ force } = {}) => {
     const { topology, loading } = get();
     if (loading) return;
-    set({ loading: true });
+    const isInitial = !topology;
+    set({ loading: isInitial, refreshing: !isInitial });
     try {
       const since = !force && topology?.revision ? topology.revision : undefined;
       const res = await api.topology(since ? { since } : undefined);
@@ -60,7 +67,7 @@ export const useTopologyStore = create<TopologyState>((set, get) => ({
     } catch {
       /* agent may be restarting */
     } finally {
-      set({ loading: false });
+      set({ loading: false, refreshing: false });
     }
   },
 
@@ -94,21 +101,25 @@ export const useTopologyStore = create<TopologyState>((set, get) => ({
       void get().fetchTopology();
     }
 
-    if (!state.pollTimer) {
-      const pollTimer = setInterval(() => {
-        if (get().subscribers > 0) void get().fetchTopology();
-      }, POLL_MS);
+    return () => {
+      set({ subscribers: Math.max(0, get().subscribers - 1) });
+    };
+  },
+
+  startBackgroundPolling: () => {
+    if (get().backgroundPolling || typeof window === 'undefined') return;
+    set({ backgroundPolling: true });
+    if (!get().topology) void get().fetchTopology({ force: true });
+    if (!get().pollTimer) {
+      const pollTimer = setInterval(() => void get().fetchTopology(), POLL_MS);
       set({ pollTimer });
     }
+  },
 
-    return () => {
-      const subs = Math.max(0, get().subscribers - 1);
-      set({ subscribers: subs });
-      if (subs === 0 && get().pollTimer) {
-        clearInterval(get().pollTimer!);
-        set({ pollTimer: null });
-      }
-    };
+  stopBackgroundPolling: () => {
+    const timer = get().pollTimer;
+    if (timer) clearInterval(timer);
+    set({ backgroundPolling: false, pollTimer: null });
   },
 }));
 

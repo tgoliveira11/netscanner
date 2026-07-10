@@ -244,7 +244,6 @@ export class RunScanUseCase {
           gatewayIp,
         });
         const result = await this.deps.upsert.execute(siteId, snapshot);
-        seenIds.push(result.device.id);
         emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
       }
 
@@ -411,12 +410,11 @@ export class RunScanUseCase {
           hostname: lease.hostname ?? existing?.hostname ?? null,
           services: existing?.services ?? [],
           os: existing?.os ?? null,
-          latencyMs: existing?.latencyMs ?? null,
+          latencyMs: null,
           signals,
           gatewayIp,
         });
         const result = await this.deps.upsert.execute(siteId, snapshot);
-        seenIds.push(result.device.id);
         emitDeviceUpsertEvents(events, scanId, result, this.deps.dnsActivityLog);
       }
 
