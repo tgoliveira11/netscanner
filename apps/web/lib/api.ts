@@ -133,6 +133,8 @@ async function agentRestart(): Promise<{ ok: boolean; restarting: boolean }> {
 export const api = {
   health: () => apiFetch('/api/health').then((r) => json<HealthResponse>(r)),
 
+  getClusterStatus: () => apiFetch('/api/cluster/status').then((r) => json(r)),
+
   interfaces: () =>
     apiFetch('/api/network/interfaces').then((r) =>
       json<{

@@ -135,6 +135,38 @@ export const EnvSchema = z.object({
   /** Auto-block new devices on listed VLANs (comma-separated pfSense interface labels). Off by default. */
   AUTOBLOCK_ENABLED: envBool(false),
   AUTOBLOCK_VLANS: z.string().default(''),
+  /** Multi-agent cluster: UDP beacon + leader election. */
+  CLUSTER_ENABLED: envBool(true),
+  CLUSTER_BEACON_PORT: z.coerce.number().default(4010),
+  /** Prefer this agent as inventory/control leader (dedicated boxes). */
+  CLUSTER_PREFER_LEADER: envBool(false),
+  /** Mark this install as dedicated appliance hardware. */
+  CLUSTER_DEDICATED: envBool(false),
+  /** Agent profile: full | scan-only | ui-only. */
+  AGENT_PROFILE: z.enum(['full', 'scan-only', 'ui-only']).default('full'),
+  /** Force UI-only mode (no elevated probes / no control writes). */
+  UI_ONLY: envBool(false),
+  /** Advertise netscanner.local via mDNS when this agent is inventory leader. */
+  MDNS_ENABLED: envBool(false),
+  MDNS_HOSTNAME: z.string().default('netscanner'),
+  /** When not leader, HTTP-redirect browser UI to the inventory leader. */
+  CLUSTER_UI_REDIRECT: envBool(true),
+  /**
+   * Comma-separated peer IPs/hostnames for unicast UDP beacons (cross-VLAN).
+   * Broadcast alone does not cross routers/VLANs.
+   */
+  CLUSTER_PEER_HOSTS: z.string().default(''),
+  /** Optional LAN IP/hostname advertised in beacons for peers to reach this agent. */
+  CLUSTER_ADVERTISE_HOST: z.string().optional(),
+  /** When false, this agent never takes pfSense/Compal control leadership. */
+  CLUSTER_CONTROL_ELIGIBLE: envBool(true),
+  /** Self-host cloud sync base URL (e.g. https://cloud.example.com). */
+  CLOUD_SYNC_URL: z.string().optional(),
+  CLOUD_SYNC_TOKEN: z.string().optional(),
+  CLOUD_SYNC_ENABLED: envBool(false),
+  /** User consent to upload PII (MACs, IPs, hostnames) to cloud. */
+  CLOUD_PII_CONSENT: envBool(false),
+  CLOUD_SYNC_INTERVAL_MS: z.coerce.number().default(5_000),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

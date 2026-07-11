@@ -1,6 +1,12 @@
 import { MacAddress, isOk } from '@netscanner/kernel';
 import type { RouterLease } from '../domain/router-lease-source.js';
 
+/** pfSense WAN / ISP handoff interface labels (GUI or internal). */
+export function isWanLikeInterface(name: string | null | undefined): boolean {
+  const hay = (name ?? '').toUpperCase();
+  return /\bWAN\b/.test(hay) || hay.includes('WAN_');
+}
+
 /** Normalize pfSense REST or push rows into a RouterLease. */
 export function normalizePfSenseLease(r: Record<string, unknown>): RouterLease | null {
   const ip = str(r['ip'] ?? r['address'] ?? r['ip_address'] ?? r['ipaddr']);
@@ -43,13 +49,16 @@ export function normalizePfSenseArpLease(r: {
     mac = isOk(parsed) ? parsed.value.value : null;
   }
   if (!mac) return null;
+  const iface = r.interface ?? null;
+  // LAN ARP is a weak hint (would flood inventory if treated as online).
+  // WAN* ARP neighbors are the ISP CPE next-hops — treat as live for lease upsert.
   return {
     ip: r.ip,
     mac,
     hostname: r.hostname ?? null,
-    interface: r.interface ?? null,
+    interface: iface,
     description: null,
-    online: false,
+    online: isWanLikeInterface(iface),
   };
 }
 

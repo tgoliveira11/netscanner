@@ -18,3 +18,4 @@ services/inventory/prisma/*.db-journal
 # Built native helpers (built by pnpm build:wifiscan / deploy)
 packages/os-abstraction/native/**/wifiscan
 !packages/os-abstraction/native/**/*.swift
+lab-credentials.env

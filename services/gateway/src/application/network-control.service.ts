@@ -66,6 +66,7 @@ export class NetworkControlService {
   private readonly routes = new Map<string, string>();
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
   private hydrated = false;
+  private controlLeaderGate: (() => boolean) | null = null;
 
   constructor(
     private readonly adapter: PfSenseRestControlAdapter | null,
@@ -78,6 +79,11 @@ export class NetworkControlService {
     private readonly leaseSource?: IRouterLeaseSource | null,
   ) {}
 
+  /** Cluster: only the control leader may write pfSense/Compal. */
+  setControlLeaderGate(gate: () => boolean): void {
+    this.controlLeaderGate = gate;
+  }
+
   start(): void {
     this.expiryTimer = setInterval(() => void this.expirePauses(), 30_000);
     void this.hydrateFromDb();
@@ -88,7 +94,9 @@ export class NetworkControlService {
   }
 
   enabled(): boolean {
-    return Boolean(this.adapter && this.config.PFSENSE_CONTROL_ENABLED);
+    if (!(this.adapter && this.config.PFSENSE_CONTROL_ENABLED)) return false;
+    if (this.controlLeaderGate && !this.controlLeaderGate()) return false;
+    return true;
   }
 
   async bootstrap(): Promise<ControlBootstrap> {

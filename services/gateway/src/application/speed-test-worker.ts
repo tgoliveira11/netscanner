@@ -1,16 +1,17 @@
 import type { AppConfig } from '@netscanner/config';
 import type { Logger } from '@netscanner/logger';
-import type { RunSpeedTestUseCase } from './run-speed-test.use-case.js';
 import type { ISpeedTestRepository } from '@netscanner/inventory';
+import type { RunWanSpeedTestsUseCase } from './run-wan-speed-tests.use-case.js';
 
 export interface SpeedTestWorkerDeps {
   config: AppConfig;
   logger: Logger;
-  runSpeedTest: RunSpeedTestUseCase;
+  /** Background samples are per physical WAN (SSH curl --interface), not agent LB egress. */
+  runWanSpeedTests: RunWanSpeedTestsUseCase;
   speedTestRepo: ISpeedTestRepository;
 }
 
-/** Periodic WAN speed sampling for historical reporting. */
+/** Periodic per-WAN speed sampling for historical reporting. */
 export class SpeedTestWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private purgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -24,7 +25,7 @@ export class SpeedTestWorker {
     setTimeout(() => void this.run(), 60_000);
     void this.purge();
     this.purgeTimer = setInterval(() => void this.purge(), 86_400_000);
-    this.deps.logger.info({ intervalMs: ms }, 'speed test worker started');
+    this.deps.logger.info({ intervalMs: ms, mode: 'per-wan' }, 'speed test worker started');
   }
 
   stop(): void {
@@ -40,13 +41,17 @@ export class SpeedTestWorker {
   }
 
   private async run(): Promise<void> {
-    if (this.deps.runSpeedTest.isRunning()) return;
+    if (this.deps.runWanSpeedTests.isRunning()) return;
     try {
-      await this.deps.runSpeedTest.execute('background');
+      const results = await this.deps.runWanSpeedTests.execute('background');
+      this.deps.logger.info(
+        { count: results.length, gateways: results.map((r) => r.wanGateway) },
+        'background per-WAN speed tests completed',
+      );
     } catch (error) {
       this.deps.logger.warn(
         { error: error instanceof Error ? error.message : error },
-        'background speed test failed',
+        'background per-WAN speed test failed',
       );
     }
   }

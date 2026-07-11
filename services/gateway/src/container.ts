@@ -121,6 +121,10 @@ import { NetworkControlService } from './application/network-control.service.js'
 import { DnsActivityLog } from './application/dns-activity-log.js';
 import { createRuntimeSettings, type RuntimeSettingsService } from './application/runtime-settings.service.js';
 import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
+import { loadOrCreateAgentIdentity } from './application/agent-identity.js';
+import { ClusterService } from './application/cluster-service.js';
+import { CloudSyncWorker } from './application/cloud-sync-worker.js';
+import type { AgentIdentity } from '@netscanner/contracts';
 
 /** Fully assembled application graph handed to the HTTP/WS layer. */
 export interface Container {
@@ -165,6 +169,9 @@ export interface Container {
   siteRepo: ISiteRepository;
   diagnostics: DiagnosticsService;
   networkControl: NetworkControlService;
+  agentIdentity: AgentIdentity;
+  cluster: ClusterService;
+  cloudSync: CloudSyncWorker;
 }
 
 /**
@@ -456,7 +463,20 @@ export async function buildContainer(): Promise<Container> {
   const logger: Logger = createLogger('gateway', logBuffer.asStream());
   const agentLogPath = path.join(process.cwd(), 'agent.log');
   const runner = new NodeCommandRunner();
-  const capabilities = await detectCapabilities(runner, config.DISABLE_NMAP);
+  let capabilities = await detectCapabilities(runner, config.DISABLE_NMAP);
+  if (config.UI_ONLY || config.AGENT_PROFILE === 'ui-only') {
+    capabilities = {
+      ...capabilities,
+      elevated: false,
+      nmap: false,
+      nmapOffReason: 'disabled-by-config',
+    };
+    logger.info('UI_ONLY profile — elevated probes disabled');
+  }
+  if (config.AGENT_PROFILE === 'scan-only') {
+    logger.info('scan-only profile — control plane disabled');
+    (config as { PFSENSE_CONTROL_ENABLED: boolean }).PFSENSE_CONTROL_ENABLED = false;
+  }
 
   logger.info({ capabilities }, 'scan capabilities detected');
 
@@ -841,7 +861,12 @@ export async function buildContainer(): Promise<Container> {
     sessions,
     leaseSource,
   });
-  const speedTestWorker = new SpeedTestWorker({ config, logger, runSpeedTest, speedTestRepo: speedTestRepo });
+  const speedTestWorker = new SpeedTestWorker({
+    config,
+    logger,
+    runWanSpeedTests,
+    speedTestRepo: speedTestRepo,
+  });
 
   const policyAudit = await buildPolicyAuditRepository(config, logger);
   const devicePolicies = await buildDevicePolicyRepository(config, logger);
@@ -872,6 +897,10 @@ export async function buildContainer(): Promise<Container> {
   }
 
   const diagnostics = new DiagnosticsService(runner, fingerprint, repo, logger, getSiteId);
+  const agentIdentity = loadOrCreateAgentIdentity(config);
+  const cluster = new ClusterService(config, logger, agentIdentity, capabilities);
+  const cloudSync = new CloudSyncWorker(config, logger, cluster, agentIdentity.id);
+
   const networkControl = new NetworkControlService(
     pfsenseControl,
     repo,
@@ -882,12 +911,20 @@ export async function buildContainer(): Promise<Container> {
     getSiteId,
     leaseSource,
   );
+  networkControl.setControlLeaderGate(() => cluster.isControlLeader());
   networkControl.start();
+  cluster.start();
+  cloudSync.start();
 
   events.on((event) => {
     if (event.type !== 'device.new') return;
     const vlan = event.payload.device.signals?.pfsenseInterface as string | undefined;
     void networkControl.autoblockDevice(event.payload.device.id, vlan ?? null);
+    cloudSync.enqueue({
+      siteId: getSiteId(),
+      type: 'device.upsert',
+      payload: { device: event.payload.device },
+    });
   });
 
   const container: Container = {
@@ -934,6 +971,9 @@ export async function buildContainer(): Promise<Container> {
     siteRepo,
     diagnostics,
     networkControl,
+    agentIdentity,
+    cluster,
+    cloudSync,
   };
   container.runtimeSettings = createRuntimeSettings(container, configPath);
   return container;

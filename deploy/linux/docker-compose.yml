@@ -1,0 +1,38 @@
+services:
+  netscanner:
+    build:
+      context: ../..
+      dockerfile: deploy/linux/Dockerfile
+    container_name: netscanner
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      NETSCANNER_HOME: /var/lib/netscanner
+      GATEWAY_HOST: "0.0.0.0"
+      CLUSTER_DEDICATED: "true"
+      CLUSTER_PREFER_LEADER: "true"
+      MDNS_ENABLED: "true"
+    volumes:
+      - netscanner-data:/var/lib/netscanner
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    # Auto-update: pair with watchtower or a systemd timer pulling :latest
+
+  # Optional self-host cloud (Fase C) — uncomment to run beside the agent
+  # cloud:
+  #   build:
+  #     context: ../..
+  #     dockerfile: services/cloud/Dockerfile
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     CLOUD_PORT: "8080"
+  #     CLOUD_SITE_TOKEN: "change-me"
+  #   volumes:
+  #     - cloud-data:/data
+
+volumes:
+  netscanner-data:

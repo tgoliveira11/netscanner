@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-export type AdminTabId = 'overview' | 'network' | 'speed' | 'integrations' | 'discovery' | 'settings';
+export type AdminTabId = 'overview' | 'network' | 'speed' | 'integrations' | 'discovery' | 'cluster' | 'settings';
 
 const TABS: { id: AdminTabId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
@@ -10,6 +10,7 @@ const TABS: { id: AdminTabId; label: string }[] = [
   { id: 'speed', label: 'Speed' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'discovery', label: 'Discovery' },
+  { id: 'cluster', label: 'Cluster' },
   { id: 'settings', label: 'Settings' },
 ];
 

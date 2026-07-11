@@ -1,0 +1,28 @@
+[Unit]
+Description=NetScanner dedicated agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/netscanner/services/gateway
+Environment=NETSCANNER_HOME=/var/lib/netscanner
+Environment=NODE_ENV=production
+Environment=GATEWAY_HOST=0.0.0.0
+Environment=GATEWAY_PORT=4000
+Environment=CLUSTER_ENABLED=true
+Environment=CLUSTER_DEDICATED=true
+Environment=CLUSTER_PREFER_LEADER=true
+Environment=MDNS_ENABLED=true
+Environment=DATABASE_URL=file:/var/lib/netscanner/netscanner.db
+EnvironmentFile=-/etc/netscanner/config.env
+ExecStart=/usr/bin/pnpm exec tsx src/main.ts
+Restart=on-failure
+RestartSec=5
+
+# Auto-update hook (optional timer calls this)
+# ExecStartPost=/opt/netscanner/scripts/check-update.sh
+
+[Install]
+WantedBy=multi-user.target

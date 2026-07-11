@@ -11,6 +11,7 @@ import { LoadingBlock } from '../../components/LoadingSpinner';
 import { PfSenseGatewaysPanel } from '../../components/PfSenseGatewaysPanel';
 import { NetworkControlPanel } from '../../components/NetworkControlPanel';
 import { SpeedTestPanel } from '../../components/SpeedTestPanel';
+import { ClusterPeersPanel } from '../../components/ClusterPeersPanel';
 import { api, type AdminConfigResponse, type AdminObservability, type AdminLogLine, type ConfigFieldSchema } from '../../lib/api';
 
 function LogViewer({ lines }: { lines: AdminLogLine[] }) {
@@ -437,6 +438,16 @@ export default function AdminPage() {
         </div>
       </CollapsibleSection>
         </LoadingBlock>
+      </AdminTabPanel>
+
+      <AdminTabPanel tab="cluster" active={tab}>
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold text-slate-200">Multi-agent cluster</h2>
+          <p className="text-xs text-muted">
+            Peers discovered via UDP beacon. Only the control leader writes pfSense/Compal. See docs/multi-agent.md.
+          </p>
+          <ClusterPeersPanel />
+        </section>
       </AdminTabPanel>
 
       <AdminTabPanel tab="settings" active={tab}>

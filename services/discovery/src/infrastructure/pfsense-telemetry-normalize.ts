@@ -9,7 +9,11 @@ import type {
   PfSenseVpnClientRow,
 } from '../domain/pfsense-telemetry.js';
 import type { RouterLease } from '../domain/router-lease-source.js';
-import { normalizePfSenseArpLease, normalizePfSenseLease } from './pfsense-lease-normalize.js';
+import {
+  isWanLikeInterface,
+  normalizePfSenseArpLease,
+  normalizePfSenseLease,
+} from './pfsense-lease-normalize.js';
 
 export function normalizePfSenseArpRow(r: Record<string, unknown>): RouterLease | null {
   const ip = str(r['ip_address'] ?? r['ip'] ?? r['ipaddr']);
@@ -370,7 +374,8 @@ export function applyInterfaceLabels(
   return leases.map((lease) => {
     if (!lease.interface) return lease;
     const label = labelMap.get(lease.interface) ?? lease.interface;
-    return { ...lease, interface: label };
+    const online = lease.online || isWanLikeInterface(label);
+    return { ...lease, interface: label, online };
   });
 }
 

@@ -160,18 +160,21 @@ Script env overrides: `NETSCANNER_HOME`, `NETSCANNER_REPO`, `NETSCANNER_SRC`,
 
 ### Security model of the agent
 
-- Binds to **`127.0.0.1` only** — never exposed to the LAN.
-- **CORS allow-list** + a server-side **Origin check** on state-changing requests
-  (`services/gateway/src/server.ts`), so no third-party website can trigger scans
-  or read your inventory via your browser. Only `/api/health` is CORS-open (it is
-  non-sensitive and used by the onboarding page to detect the agent).
+- Default install binds to **`127.0.0.1`**. Dedicated Linux boxes use **`GATEWAY_HOST=0.0.0.0`** for LAN-wide UI (see [docs/multi-agent.md](docs/multi-agent.md)).
+- **CORS** allows localhost + private LAN origins; mutating requests still require an allow-listed/private Origin.
+- Mutating APIs use Bearer tokens (`AGENT_CONTROL_TOKEN` / `CONTROL_TOKEN`). LAN UI may be open on trusted networks.
+- Multi-agent: only the **control leader** writes pfSense/Compal.
 - **Uninstall** is a single command (shown on the onboarding page): removes
   `~/.netscanner` and the service definition.
+
+See also: [deploy/linux](deploy/linux/README.md) for the dedicated appliance.
 
 ## API
 
 | Method | Path                       | Description                          |
 | ------ | -------------------------- | ------------------------------------ |
+| GET    | `/api/cluster/status`      | multi-agent role, peers, leaders     |
+| GET    | `/api/cluster/peers`       | discovered peer agents               |
 | GET    | `/api/health`              | status + capabilities (nmap/elevated)|
 | GET    | `/api/network/interfaces`  | local interfaces + primary CIDR      |
 | GET    | `/api/dhcp/fingerprints`   | passive DHCP fingerprints (`?mac=` optional) |
