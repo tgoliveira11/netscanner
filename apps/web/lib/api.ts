@@ -24,6 +24,9 @@ import type {
   CompalActionResponse,
   CompalStreamEvent,
   CompalDoneEvent,
+  CpeAccessListResponse,
+  CpeAccessOpenRequest,
+  CpeAccessOpenResponse,
   DhcpReservationRequest,
   BandwidthLimitRequest,
   ParentalScheduleRequest,
@@ -193,6 +196,25 @@ export const api = {
   adminWireless: () => apiFetch('/api/admin/wireless').then((r) => json<AdminWirelessResponse>(r)),
 
   adminCompal: () => apiFetch('/api/admin/compal').then((r) => json<CompalAdminResponse>(r)),
+
+  adminCpeList: () => apiFetch('/api/admin/cpe').then((r) => json<CpeAccessListResponse>(r)),
+
+  adminCpeOpen: (body: CpeAccessOpenRequest) =>
+    apiFetch('/api/admin/cpe/open', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<CpeAccessOpenResponse>(r)),
+
+  adminCpeClose: (id: string) =>
+    apiFetch(`/api/admin/cpe/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) =>
+      json<{ ok: boolean }>(r),
+    ),
+
+  adminCpeRearmLogin: (id: string) =>
+    apiFetch(`/api/admin/cpe/${encodeURIComponent(id)}/rearm-login`, { method: 'POST' }).then((r) =>
+      json<{ ok: boolean }>(r),
+    ),
 
   adminPfSenseGateways: () =>
     apiFetch('/api/admin/pfsense/gateways').then((r) => json<PfSenseGatewaysResponse>(r)),

@@ -156,7 +156,7 @@ export function CompalPanel() {
         </div>
         {autoPolling && (
           <p className="text-xs text-muted">
-            Auto-refreshing (AP offline or stabilizing after action) — stops after 3 min.
+            Auto-refreshing while an AP is offline or stabilizing after an action — idle when all look stable.
           </p>
         )}
         {(error || actionError) && !activity?.running && (

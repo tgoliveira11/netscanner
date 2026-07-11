@@ -73,6 +73,8 @@ Multi-site fingerprinting and VPN-aware site matching. See also [network-sites.m
 
 External systems that feed inventory, traffic, or DHCP data.
 
+**CPE / modem access** — on the Integrations tab you can open a browser session to any modem/CPE admin UI by IP + username + password. The agent probes direct reachability first; if the CPE is only reachable from pfSense (typical ISP modem on WAN), it opens an SSH local-forward (`PFSENSE_URL` + `PFSENSE_SSH_PASSWORD`) and reverse-proxies under `/api/admin/cpe/proxy/:id/`. Sessions are stored in SQLite and survive agent restart; they close only when you click **Close tunnel**. Credentials are kept encrypted at rest when possible and used for one-shot auto-login on the modem page.
+
 | Key | Type | Restart | Description |
 |-----|------|---------|-------------|
 | `PFSENSE_URL` | string | yes | Base URL for pfSense REST API, e.g. `https://192.168.51.1`. Required for leases, traffic states, and network control. |

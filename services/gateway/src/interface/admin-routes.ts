@@ -3,6 +3,7 @@ import { mergeRouterScrapeTargets } from '@netscanner/config';
 import {
   CompalMeshRequestSchema,
   CompalRebootRequestSchema,
+  CpeAccessOpenRequestSchema,
   type CompalStreamEvent,
 } from '@netscanner/contracts';
 import {
@@ -16,10 +17,10 @@ import {
 import type { Container } from '../container.js';
 import { tailAgentLogFile } from '../infrastructure/log-ring-buffer.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 /** Admin diagnostics and runtime configuration (no auth yet — localhost only). */
-export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
+export async function registerAdminRoutes(app: FastifyInstance, c: Container): Promise<void> {
   app.get('/api/admin/observability', async () => {
     const active = c.sessions.activeScan();
     const latest = c.sessions.latest();
@@ -233,6 +234,53 @@ export function registerAdminRoutes(app: FastifyInstance, c: Container): void {
     c.logger.info('agent restart requested via admin');
     await reply.send({ ok: true, restarting: true });
     setTimeout(() => process.exit(0), 500);
+  });
+
+  // --- Generic CPE / modem admin access (reachability broker + reverse proxy) ---
+  app.get('/api/admin/cpe', async () => c.cpeAccess.list());
+
+  app.post('/api/admin/cpe/open', async (request, reply) => {
+    const parsed = CpeAccessOpenRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ ok: false, error: parsed.error.message });
+    }
+    const result = await c.cpeAccess.open(parsed.data);
+    return reply.status(result.ok ? 200 : 502).send(result);
+  });
+
+  app.delete('/api/admin/cpe/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ok = await c.cpeAccess.close(id);
+    return reply.status(ok ? 200 : 404).send({ ok });
+  });
+
+  app.post('/api/admin/cpe/:id/rearm-login', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ok = await c.cpeAccess.rearmAutoLogin(id);
+    return reply.status(ok ? 200 : 404).send({ ok });
+  });
+
+  // Scoped parsers so POST login bodies are not consumed before we pipe to the CPE.
+  await app.register(async (scope) => {
+    scope.removeAllContentTypeParsers();
+    scope.addContentTypeParser('*', (_request, _payload, done) => {
+      done(null);
+    });
+
+    scope.all('/api/admin/cpe/proxy/:id', async (request, reply) => {
+      const { id } = request.params as { id: string };
+      reply.hijack();
+      await c.cpeAccess.proxyHttp(id, request.raw, reply.raw, '/');
+    });
+
+    scope.all('/api/admin/cpe/proxy/:id/*', async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const wildcard = (request.params as { '*': string })['*'] ?? '';
+      const suffix = wildcard ? `/${wildcard}` : '/';
+      const q = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : '';
+      reply.hijack();
+      await c.cpeAccess.proxyHttp(id, request.raw, reply.raw, `${suffix}${q}`);
+    });
   });
 }
 

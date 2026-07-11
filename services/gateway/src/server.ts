@@ -97,7 +97,7 @@ export async function buildServer(c: Container) {
     await maybeRedirectToLeader(request, reply, c.cluster, c.config);
   });
 
-  registerRoutes(app, c);
+  await registerRoutes(app, c);
 
   // Serve the exported dashboard so the agent is a single localhost app.
   const webOut = findWebOut();
