@@ -42,6 +42,15 @@ export function mergePassiveSignals(
       out[key] = merged.slice(-30);
       continue;
     }
+    if (
+      (key === 'tlsSniRecent' || key === 'httpHostRecent') &&
+      Array.isArray(out[key]) &&
+      Array.isArray(value)
+    ) {
+      const merged = [...new Set([...(out[key] as string[]), ...(value as string[])])];
+      out[key] = merged.slice(-30);
+      continue;
+    }
     if (key === 'mdnsTxt' && out[key] && typeof out[key] === 'object' && typeof value === 'object') {
       out[key] = { ...(out[key] as Record<string, unknown>), ...(value as Record<string, unknown>) };
       continue;

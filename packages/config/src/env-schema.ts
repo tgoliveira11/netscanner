@@ -49,8 +49,23 @@ export const EnvSchema = z.object({
   /** Bridge port numbers treated as WiFi/radio uplinks (comma-separated). */
   SNMP_WIFI_PORTS: z.string().default(''),
   PASSIVE_DNS_ENABLED: envBool(true),
+  /** How many top domains to keep in dnsProfile (DNS intelligence). */
+  DNS_INTEL_TOP_N: z.coerce.number().default(8),
   PASSIVE_IGMP_ENABLED: envBool(true),
   PASSIVE_DHCPV6_ENABLED: envBool(true),
+  /** tshark deep capture (TLS SNI, HTTP Host, richer DHCP). Auto-skips if binary missing. */
+  TSHARK_DEEP_ENABLED: envBool(true),
+  /** Prefer lldpctl neighbors when lldpd is installed. */
+  LLDPD_ENABLED: envBool(true),
+  /** Continuous passive ARP via netdiscover (elevated, Linux). */
+  NETDISCOVER_ENABLED: envBool(true),
+  /** Expand local CVE index from NVD 2.0 subset (offline seed always used). */
+  CVE_NVD_SYNC: envBool(false),
+  /** Absolute rate (bps) above which TRAFFIC_SPIKE may fire. */
+  TRAFFIC_SPIKE_BPS: z.coerce.number().default(50_000_000),
+  /** Optional ntopng API base URL for per-host traffic. */
+  NTOPNG_URL: z.string().optional(),
+  NTOPNG_TOKEN: z.string().optional(),
   /** Fast ICMP presence polling for near-real-time online/offline in the UI. */
   PRESENCE_POLL_ENABLED: envBool(true),
   PRESENCE_POLL_INTERVAL_MS: z.coerce.number().default(30_000),

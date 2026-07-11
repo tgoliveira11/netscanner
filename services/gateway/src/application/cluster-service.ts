@@ -36,7 +36,8 @@ function resolveCapabilities(
     leaderish && config.PFSENSE_CONTROL_ENABLED && config.CLUSTER_CONTROL_ELIGIBLE;
   const compalControl = leaderish && config.CLUSTER_CONTROL_ELIGIBLE;
   const inventoryScan = workerOk;
-  const wifiRf = workerOk;
+  // CoreWLAN / system_profiler only work on macOS; Linux leaders scrape APs instead.
+  const wifiRf = workerOk && process.platform === 'darwin';
   const topologyBuilder = leaderish;
   const presence = leaderish;
 
@@ -172,6 +173,22 @@ export class ClusterService {
     if (!id) return null;
     const peer = this.peers.get(id);
     if (!peer) return null;
+    const host = peer.httpHost || peer.address;
+    return `http://${host}:${peer.httpPort}`;
+  }
+
+  /** Live peers that can run a local Wi‑Fi RF scan (typically macOS helpers). */
+  listWifiRfPeers(): ClusterPeer[] {
+    const out: ClusterPeer[] = [];
+    for (const peer of this.peers.values()) {
+      if (peer.stale) continue;
+      if (!peer.capabilities.wifiRf && !peer.capabilities.wifi) continue;
+      out.push(peer);
+    }
+    return out;
+  }
+
+  peerBaseUrl(peer: ClusterPeer): string {
     const host = peer.httpHost || peer.address;
     return `http://${host}:${peer.httpPort}`;
   }
@@ -338,6 +355,11 @@ export class ClusterService {
     }
 
     // Leader: SoT UI. Worker: local A record + reverse-proxy to leader.
-    this.mdns.start({ hostname: host, port: 80 });
+    const advertise = this.config.CLUSTER_ADVERTISE_HOST?.trim();
+    this.mdns.start({
+      hostname: host,
+      port: 80,
+      ...(advertise && /^\d+\.\d+\.\d+\.\d+$/.test(advertise) ? { ipv4: advertise } : {}),
+    });
   }
 }

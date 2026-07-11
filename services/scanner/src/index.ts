@@ -10,6 +10,8 @@ export * from './infrastructure/pfsense-ssh-speed-test.js';
 export * from './infrastructure/pf-rest-states.parser.js';
 export * from './infrastructure/pf-rest-traffic-source.js';
 export * from './infrastructure/pf-ssh-traffic-source.js';
+export * from './infrastructure/composite-traffic-source.js';
+export * from './infrastructure/ntopng-traffic-adapter.js';
 export * from './infrastructure/network-enricher.js';
 export * from './application/fingerprint-host.use-case.js';
 export * from './infrastructure/nmap-xml.parser.js';

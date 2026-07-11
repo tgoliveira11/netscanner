@@ -11,7 +11,7 @@ export function Header() {
   const caps = useStore((s) => s.capabilities);
 
   return (
-    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-edge pb-4">
+    <header className="relative z-50 flex flex-wrap items-center justify-between gap-3 border-b border-edge bg-base pb-4">
       <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
         <div>
           <h1 className="text-xl font-bold text-slate-100">

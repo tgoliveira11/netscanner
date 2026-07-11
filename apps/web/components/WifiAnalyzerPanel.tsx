@@ -104,7 +104,7 @@ export function WifiAnalyzerPanel({
         <div>
           <h2 className="text-sm font-semibold text-slate-200">Wi‑Fi analyzer</h2>
           <p className="text-xs text-muted">
-            Channel congestion, modem/APs, and recommendations — Mac scan plus router iwinfo.
+            Channel congestion from nearby RF (Mac scan) plus your AP radios — Re-scan to refresh.
           </p>
         </div>
         <button type="button" onClick={onRefresh} disabled={busy} className="btn btn-ghost text-xs">

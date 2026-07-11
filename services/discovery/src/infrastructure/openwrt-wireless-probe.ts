@@ -19,6 +19,9 @@ export interface OpenWrtWirelessResult {
   ssids: LuciWirelessSsid[];
 }
 
+/** Soft ceiling per AP so one hung Compal cannot stall topology/admin probes. */
+const PER_TARGET_TIMEOUT_MS = 8_000;
+
 export async function probeOpenWrtWifiNeighbors(
   targets: OpenWrtScrapeTarget[],
   logger: Logger,
@@ -54,59 +57,84 @@ export async function probeOpenWrtWireless(
   targets: OpenWrtScrapeTarget[],
   logger: Logger,
 ): Promise<OpenWrtWirelessResult[]> {
-  const results: OpenWrtWirelessResult[] = [];
-  for (const target of targets) {
-    const host = safeHost(target.baseUrl);
-    if (!target.username || !target.password) {
-      results.push({
-        url: target.baseUrl,
-        host,
-        ok: false,
-        error: 'missing username or password',
-        wifiCapable: false,
-        radioCount: 0,
-        ssids: [],
-      });
-      continue;
-    }
-    const auth = resolveLuciAuthMode({ kind: target.kind, username: target.username });
-    try {
-      const client = new LuciClient({
-        baseUrl: target.baseUrl,
-        username: target.username,
-        password: target.password,
-        insecureTls: true,
-        auth,
-      });
-      const ssids = await client.getWirelessSsids();
-      const radios = new Set(ssids.map((s) => s.device));
-      logger.info(
-        { url: target.baseUrl, kind: target.kind, ssids: ssids.length, radios: radios.size },
-        'LuCI wireless probe',
-      );
-      results.push({
-        url: target.baseUrl,
-        host,
-        ok: true,
-        wifiCapable: radios.size > 0,
-        radioCount: radios.size,
-        ssids,
-      });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn({ url: target.baseUrl, kind: target.kind, error: msg }, 'LuCI wireless probe failed');
-      results.push({
-        url: target.baseUrl,
-        host,
-        ok: false,
-        error: msg,
-        wifiCapable: false,
-        radioCount: 0,
-        ssids: [],
-      });
-    }
+  // Parallel with per-target timeout — sequential Compal ETIMEDOUT previously blocked /api/topology for minutes.
+  return Promise.all(targets.map((target) => probeOneWirelessTarget(target, logger)));
+}
+
+async function probeOneWirelessTarget(
+  target: OpenWrtScrapeTarget,
+  logger: Logger,
+): Promise<OpenWrtWirelessResult> {
+  const host = safeHost(target.baseUrl);
+  if (!target.username || !target.password) {
+    return {
+      url: target.baseUrl,
+      host,
+      ok: false,
+      error: 'missing username or password',
+      wifiCapable: false,
+      radioCount: 0,
+      ssids: [],
+    };
   }
-  return results;
+
+  const auth = resolveLuciAuthMode({ kind: target.kind, username: target.username });
+  const work = (async (): Promise<OpenWrtWirelessResult> => {
+    const client = new LuciClient({
+      baseUrl: target.baseUrl,
+      username: target.username!,
+      password: target.password!,
+      insecureTls: true,
+      auth,
+    });
+    const ssids = await client.getWirelessSsids();
+    const radios = new Set(ssids.map((s) => s.device));
+    logger.info(
+      { url: target.baseUrl, kind: target.kind, ssids: ssids.length, radios: radios.size },
+      'LuCI wireless probe',
+    );
+    return {
+      url: target.baseUrl,
+      host,
+      ok: true,
+      wifiCapable: radios.size > 0,
+      radioCount: radios.size,
+      ssids,
+    };
+  })();
+
+  try {
+    return await Promise.race([
+      work,
+      sleep(PER_TARGET_TIMEOUT_MS).then(
+        (): OpenWrtWirelessResult => ({
+          url: target.baseUrl,
+          host,
+          ok: false,
+          error: `timeout after ${PER_TARGET_TIMEOUT_MS}ms`,
+          wifiCapable: false,
+          radioCount: 0,
+          ssids: [],
+        }),
+      ),
+    ]);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.warn({ url: target.baseUrl, kind: target.kind, error: msg }, 'LuCI wireless probe failed');
+    return {
+      url: target.baseUrl,
+      host,
+      ok: false,
+      error: msg,
+      wifiCapable: false,
+      radioCount: 0,
+      ssids: [],
+    };
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function safeHost(baseUrl: string): string {

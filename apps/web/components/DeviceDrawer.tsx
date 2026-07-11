@@ -120,7 +120,7 @@ export function DeviceDrawer() {
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/50" onClick={() => select(null)}>
+    <div className="fixed inset-0 z-30 flex justify-end bg-black/50" onClick={() => select(null)}>
       <aside
         className="h-full w-full max-w-md overflow-y-auto border-l border-edge bg-panel p-5"
         onClick={(e) => e.stopPropagation()}

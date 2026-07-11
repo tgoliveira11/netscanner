@@ -124,8 +124,8 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
   }, [layoutRevision, deviceList.length, applyLayout, topology]);
 
   const { nodes: rawNodes, edges, width, height } = useMemo(
-    () => buildRenderLayout(layoutCache, computed),
-    [layoutCache, computed],
+    () => buildRenderLayout(layoutCache, computed, devices),
+    [layoutCache, computed, devices],
   );
 
   const nodes = useMemo(() => {
@@ -402,6 +402,8 @@ export function TopologyView({ fullPage = false }: { fullPage?: boolean }) {
         {nodes.length === 0 ? (
           loading && !topology ? (
             <LoadingSpinner label="Loading topology…" />
+          ) : refreshing || loading ? (
+            <LoadingSpinner label="Updating topology…" />
           ) : (
             <p className="py-16 text-center text-sm text-muted">
               No topology yet — devices appear from pfSense leases and inventory; no scan required.

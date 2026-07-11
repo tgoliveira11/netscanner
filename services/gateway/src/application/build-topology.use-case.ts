@@ -69,6 +69,8 @@ export class BuildTopologyUseCase {
     data: Awaited<ReturnType<typeof probeOpenWrtWireless>>;
   } | null = null;
   private cached: TopologyResponse | null = null;
+  private wirelessRefresh: Promise<void> | null = null;
+  private inFlightBuild: Promise<TopologyResponse> | null = null;
 
   constructor(
     private readonly repo: IDeviceRepository,
@@ -96,9 +98,21 @@ export class BuildTopologyUseCase {
       };
     }
 
+    // Collapse concurrent /api/topology callers onto one build (avoids LuCI stampede).
+    if (this.inFlightBuild) return this.inFlightBuild;
+    this.inFlightBuild = this.buildOnce().finally(() => {
+      this.inFlightBuild = null;
+    });
+    return this.inFlightBuild;
+  }
+
+  private async buildOnce(): Promise<TopologyResponse> {
     if (this.connectionSource) {
       try {
-        await this.connectionSource.refresh();
+        await Promise.race([
+          this.connectionSource.refresh(),
+          sleep(2_000).then(() => undefined),
+        ]);
       } catch (error) {
         this.logger.warn(
           { err: error instanceof Error ? error.message : String(error) },
@@ -125,6 +139,26 @@ export class BuildTopologyUseCase {
       scrapeTargets.length > 0
         ? await this.loadWireless(scrapeTargets)
         : [];
+
+    return this.assembleTopology({
+      devices,
+      localIfaces,
+      scrapeTargets,
+      managedRouterIps,
+      wireless,
+      topology,
+    });
+  }
+
+  private assembleTopology(input: {
+    devices: Device[];
+    localIfaces: LocalInterface[];
+    scrapeTargets: RouterScrapeTarget[];
+    managedRouterIps: Set<string>;
+    wireless: Awaited<ReturnType<typeof probeOpenWrtWireless>>;
+    topology: TopologyConfig;
+  }): TopologyResponse {
+    const { devices, localIfaces, scrapeTargets, managedRouterIps, wireless, topology } = input;
 
     const gateway = pickGateway(devices, localIfaces, this.config);
     const eligibility: TopologyEligibilityContext = {
@@ -336,7 +370,10 @@ export class BuildTopologyUseCase {
     );
   }
 
-  /** Reuse recent wireless probe so topology does not flash empty between API calls. */
+  /**
+   * Stale-while-revalidate: never block /api/topology on slow Compal/OpenWrt logins.
+   * Cold start waits briefly; otherwise return cache and refresh in the background.
+   */
   private async loadWireless(
     scrapeTargets: RouterScrapeTarget[],
   ): Promise<Awaited<ReturnType<typeof probeOpenWrtWireless>>> {
@@ -344,6 +381,39 @@ export class BuildTopologyUseCase {
     if (this.wirelessCache && now - this.wirelessCache.at < WIRELESS_PROBE_TTL_MS) {
       return this.wirelessCache.data;
     }
+    if (this.wirelessCache) {
+      this.scheduleWirelessRefresh(scrapeTargets);
+      return this.wirelessCache.data;
+    }
+
+    const probed = await Promise.race([
+      this.probeAndCacheWireless(scrapeTargets),
+      sleep(2_500).then(() => null),
+    ]);
+    if (probed) return probed;
+    this.scheduleWirelessRefresh(scrapeTargets);
+    return [];
+  }
+
+  private scheduleWirelessRefresh(scrapeTargets: RouterScrapeTarget[]): void {
+    if (this.wirelessRefresh) return;
+    this.wirelessRefresh = this.probeAndCacheWireless(scrapeTargets)
+      .then(() => undefined)
+      .catch((error) => {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'topology: background wireless refresh failed',
+        );
+      })
+      .finally(() => {
+        this.wirelessRefresh = null;
+      });
+  }
+
+  private async probeAndCacheWireless(
+    scrapeTargets: RouterScrapeTarget[],
+  ): Promise<Awaited<ReturnType<typeof probeOpenWrtWireless>>> {
+    const now = Date.now();
     const data = await probeOpenWrtWireless(
       scrapeTargets.map((t) => ({
         baseUrl: t.baseUrl,
@@ -353,12 +423,11 @@ export class BuildTopologyUseCase {
       })),
       this.logger,
     );
-    if (data.some((row) => row.ok)) {
+    if (data.some((row) => row.ok) || !this.wirelessCache) {
       this.wirelessCache = { at: now, data };
-    } else if (this.wirelessCache) {
-      return this.wirelessCache.data;
+      return data;
     }
-    return data;
+    return this.wirelessCache.data;
   }
 }
 
@@ -723,6 +792,10 @@ function hostFromUrl(baseUrl: string): string {
   } catch {
     return baseUrl.replace(/^https?:\/\//, '').split('/')[0] ?? '';
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function lookupSnmp(device: Device, source?: IConnectionSource) {

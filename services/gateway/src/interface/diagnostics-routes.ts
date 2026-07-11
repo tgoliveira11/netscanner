@@ -52,8 +52,52 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, c: Container): v
     return c.diagnostics.portScan(parsed.data.ip, parsed.data.depth);
   });
 
+  /** Local RF only — used by cluster peers; must not be reverse-proxied to the leader. */
+  app.get('/api/diagnostics/wifi-rf', async () => c.diagnostics.wifiScan());
+
   app.get('/api/diagnostics/wifi', async () => {
-    const local = await c.diagnostics.wifiScan();
+    let local = await c.diagnostics.wifiScan();
+    const peerRfNotes: string[] = [];
+
+    // Dedicated Linux leaders have no Wi‑Fi radio — pull CoreWLAN scans from Mac helpers.
+    const localUseful = local.aps.some((a) => a.source === 'local' || a.source == null);
+    if (!localUseful) {
+      const peers = c.cluster.listWifiRfPeers();
+      for (const peer of peers) {
+        try {
+          const url = `${c.cluster.peerBaseUrl(peer)}/api/diagnostics/wifi-rf`;
+          const res = await fetch(url, { signal: AbortSignal.timeout(55_000) });
+          if (!res.ok) {
+            peerRfNotes.push(`${peer.hostname}: HTTP ${res.status}`);
+            continue;
+          }
+          const body = (await res.json()) as Awaited<ReturnType<typeof c.diagnostics.wifiScan>>;
+          const peerAps = (body.aps ?? []).map((a) => ({
+            ...a,
+            source: (a.source === 'router' ? 'router' : 'nearby') as WifiAp['source'],
+          }));
+          if (!peerAps.length) {
+            peerRfNotes.push(`${peer.hostname}: empty scan`);
+            continue;
+          }
+          local = {
+            ...local,
+            currentSsid: local.currentSsid ?? body.currentSsid ?? null,
+            currentChannel: local.currentChannel ?? body.currentChannel,
+            currentBand: local.currentBand ?? body.currentBand,
+            connectedInferred: local.connectedInferred ?? body.connectedInferred,
+            aps: [...local.aps, ...peerAps],
+            note: body.note ?? local.note,
+          };
+          peerRfNotes.push(`${peer.hostname}: ${peerAps.length} AP(s)`);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          peerRfNotes.push(`${peer.hostname}: ${msg}`);
+          c.logger.warn({ peer: peer.hostname, error: msg }, 'peer Wi‑Fi RF scan failed');
+        }
+      }
+    }
+
     const creds = await c.repo.listRouterScrapeCredentials(c.activeSite.getActiveSiteId() ?? '00000000-0000-4000-8000-000000000001');
     const targets = mergeRouterScrapeTargets(
       c.config,
@@ -73,6 +117,11 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, c: Container): v
         ...local,
         channelCollisions: computeChannelCollisions(local.aps),
         analysis,
+        note:
+          local.note ??
+          (peerRfNotes.length
+            ? `RF via peer: ${peerRfNotes.join('; ')}`
+            : undefined),
       };
     }
 
@@ -132,26 +181,29 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, c: Container): v
         })),
     );
 
-    const seen = new Set(local.aps.map((a) => `${a.ssid}|${a.bssid ?? ''}|${a.source ?? 'local'}`));
+    const seen = new Set(local.aps.map((a) => `${a.ssid}|${a.bssid ?? ''}|${a.channel ?? ''}|${a.source ?? 'local'}`));
     const merged = [...local.aps];
     for (const ap of [...routerAps, ...neighborAps]) {
-      const key = `${ap.ssid}|${ap.bssid ?? ''}|${ap.source}`;
+      const key = `${ap.ssid}|${ap.bssid ?? ''}|${ap.channel ?? ''}|${ap.source}`;
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(ap);
     }
 
-    const hasNearby = neighborAps.length > 0;
-    const hasHiddenLocal = local.aps.some((a) => a.ssid.startsWith('(SSID hidden'));
-    const note =
-      local.note ??
-      (hasNearby
-        ? 'Vizinhos via scan iwinfo do AP + SSIDs configurados + visão deste Mac.'
-        : routerAps.length
-          ? hasHiddenLocal
-            ? 'SSIDs do modem/AP via scrape. macOS oculta vizinhos — habilite Location Services ou use AP com iwinfo scan.'
-            : 'Inclui rádios dos seus APs/modems (scrape) e redes vistas por este Mac quando disponível.'
-          : undefined);
+    const hasNearby = neighborAps.length > 0 || merged.some((a) => a.source === 'nearby' || a.source === 'local');
+    const hasHiddenLocal = merged.some((a) => a.ssid.startsWith('(SSID hidden'));
+    const noteParts: string[] = [];
+    if (local.note) noteParts.push(local.note);
+    if (peerRfNotes.length) noteParts.push(`RF peer: ${peerRfNotes.join('; ')}`);
+    if (hasNearby && !local.note) {
+      noteParts.push('Vizinhos via scan do Mac/AP + SSIDs configurados nos seus APs.');
+    } else if (routerAps.length && !hasNearby) {
+      noteParts.push(
+        hasHiddenLocal
+          ? 'SSIDs do modem/AP via scrape. macOS oculta nomes — habilite Location Services para /usr/bin/swift.'
+          : 'Só SSIDs dos seus APs (scrape). Scan iwinfo no Compal bloqueado (403); use um Mac no cluster para RF.',
+      );
+    }
 
     const analysis = analyzeWifi({
       currentSsid: local.currentSsid,
@@ -163,7 +215,7 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, c: Container): v
       ...local,
       aps: merged,
       channelCollisions: computeChannelCollisions(merged),
-      note,
+      note: noteParts.filter(Boolean).join(' ') || undefined,
       analysis,
     };
   });
