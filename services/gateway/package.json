@@ -22,7 +22,9 @@
     "@netscanner/os-abstraction": "workspace:*",
     "@netscanner/scanner": "workspace:*",
     "@prisma/client": "^6.2.1",
+    "bonjour-service": "^1.4.2",
     "fastify": "^5.2.1",
+    "multicast-dns": "^7.2.5",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.5"
   }

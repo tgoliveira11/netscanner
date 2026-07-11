@@ -466,6 +466,73 @@ describe('resolveClientAttachment', () => {
       }),
     ).toMatchObject({ parentId: 'sw', kind: 'wired' });
   });
+
+  it('hangs unknown clients on wired VLAN under the switch', () => {
+    const proxmox = baseDevice({
+      id: 'pve',
+      ip: '10.0.40.101',
+      connectionType: 'unknown',
+      deviceType: 'computer',
+      signals: { pfsenseInterface: 'VLAN40' },
+    });
+    expect(
+      resolveClientAttachment({
+        device: proxmox,
+        vlan: { id: 'VLAN40', label: 'VLAN40' },
+        snmp: null,
+        switchDevice,
+        gateway,
+        wifiAps: [ap],
+        apByVlan,
+        wireless: [],
+        topology: vlanLabTopology(),
+      }),
+    ).toMatchObject({ parentId: 'sw', kind: 'wired', label: 'lan' });
+  });
+
+  it('hangs unknown clients on switch /24 under the switch even without wired VLAN tag', () => {
+    const host = baseDevice({
+      id: 'box',
+      ip: '10.0.10.110',
+      connectionType: 'unknown',
+      deviceType: 'computer',
+    });
+    expect(
+      resolveClientAttachment({
+        device: host,
+        vlan: { id: '192.168.40.0/24', label: '192.168.40.0/24' },
+        snmp: null,
+        switchDevice,
+        gateway,
+        wifiAps: [],
+        apByVlan: new Map(),
+        wireless: [],
+        topology: vlanLabTopology(),
+      }),
+    ).toMatchObject({ parentId: 'sw', kind: 'wired' });
+  });
+
+  it('keeps unknown clients on non-wired VLANs under AP or gateway', () => {
+    const phone = baseDevice({
+      id: 'phone',
+      ip: '10.0.1.100',
+      connectionType: 'unknown',
+      signals: { pfsenseInterface: 'VLAN10' },
+    });
+    expect(
+      resolveClientAttachment({
+        device: phone,
+        vlan: { id: 'VLAN10', label: 'VLAN10' },
+        snmp: null,
+        switchDevice,
+        gateway,
+        wifiAps: [ap],
+        apByVlan,
+        wireless: [],
+        topology: vlanLabTopology(),
+      })?.parentId,
+    ).toBe('ap');
+  });
 });
 
 describe('collectVlans', () => {

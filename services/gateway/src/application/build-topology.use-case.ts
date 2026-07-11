@@ -636,9 +636,9 @@ export function isMacSharingIp(ip: string, prefix = '192.168.64.'): boolean {
   return ip.startsWith(prefix);
 }
 
-/** Typical ISP handoff / CPE management segment (not auto-scanned). */
+/** Typical ISP handoff / CPE management segments (not auto-detected as primary LAN). */
 export function isWanHandoffIp(ip: string): boolean {
-  return ip.startsWith('192.168.0.');
+  return ip.startsWith('192.168.0.') || ip.startsWith('192.168.15.');
 }
 
 export function isWanOrUnusedSegment(vlanId: string): boolean {
@@ -771,7 +771,7 @@ export function collectVlans(edges: TopologyEdge[], vlanOrder: string[] = []): T
  * 1. SNMP BRIDGE-MIB wired → physical switch (authoritative L2)
  * 2. SNMP wifi / device wifi → AP on same VLAN (or matching /24)
  * 3. Device wired without SNMP → switch only on INFRA / switch subnet, else gateway
- * 4. Unknown → AP on VLAN if any, else gateway
+ * 4. Unknown → switch when on wired VLAN or switch /24; else AP on VLAN if any; else gateway
  */
 export function resolveClientAttachment(input: {
   device: Device;
@@ -805,6 +805,11 @@ export function resolveClientAttachment(input: {
 
   const isWifi = snmp?.type === 'wifi' || device.connectionType === 'wifi';
   const isWired = snmp?.type === 'wired' || device.connectionType === 'wired';
+  const hangUnderSwitch =
+    Boolean(switchDevice) &&
+    (topology.mode === 'simple' ||
+      sameIpv4Slash24(device.ip, switchDevice!.ip) ||
+      Boolean(wiredVlan && vlan.id === wiredVlan));
 
   if (isWifi) {
     const ap = apByVlan.get(vlan.id) ?? apForIp(device.ip, wifiAps);
@@ -819,12 +824,7 @@ export function resolveClientAttachment(input: {
   }
 
   if (isWired) {
-    if (
-      switchDevice &&
-      (topology.mode === 'simple' ||
-        sameIpv4Slash24(device.ip, switchDevice.ip) ||
-        (wiredVlan && vlan.id === wiredVlan))
-    ) {
+    if (hangUnderSwitch && switchDevice) {
       return {
         parentId: switchDevice.id,
         kind: 'wired',
@@ -836,6 +836,17 @@ export function resolveClientAttachment(input: {
       parentId: gateway.id,
       kind: 'wired',
       label: snmp?.ifName ?? 'wired',
+      wifiCapable: false,
+    };
+  }
+
+  // Unknown connection: still prefer the switch when the device is clearly on the
+  // wired infra VLAN / switch subnet (e.g. Proxmox on LAN_INFRA without SNMP FDB).
+  if (hangUnderSwitch && switchDevice) {
+    return {
+      parentId: switchDevice.id,
+      kind: 'wired',
+      label: 'lan',
       wifiCapable: false,
     };
   }

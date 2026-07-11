@@ -65,6 +65,27 @@ describe('buildInterfaceLabelMap', () => {
       )[0]?.interface,
     ).toBe('VLAN10');
   });
+
+  it('marks leases online when label maps to WAN*', () => {
+    const map = buildInterfaceLabelMap([
+      normalizePfSenseInterfaceRow({ name: 'opt1', descr: 'WAN_CLARO' }),
+    ]);
+    expect(
+      applyInterfaceLabels(
+        [
+          {
+            ip: '192.168.0.1',
+            mac: 'd4:92:5e:e2:f4:b6',
+            hostname: null,
+            interface: 'opt1',
+            description: null,
+            online: false,
+          },
+        ],
+        map,
+      )[0],
+    ).toMatchObject({ interface: 'WAN_CLARO', online: true });
+  });
 });
 
 describe('normalizePfSenseGatewayRow', () => {

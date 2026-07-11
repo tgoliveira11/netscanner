@@ -80,8 +80,9 @@ export function detectPrimaryCidr(): string | null {
 }
 
 /**
- * Subnets we never auto-scan: ISP handoff, Mac Internet Sharing, VPN overlays.
- * Extra SCAN_CIDRS can still add them deliberately if the operator wants.
+ * Subnets we never auto-detect from local interfaces: common ISP handoff (.0),
+ * Mac Internet Sharing, VPN overlays. Operators can still add them explicitly
+ * via SCAN_CIDRS (e.g. 192.168.0.0/24 + 192.168.15.0/24 for dual-WAN CPE).
  */
 export function isIgnoredScanCidr(cidr: string): boolean {
   const network = cidr.split('/')[0] ?? cidr;

@@ -7,6 +7,7 @@ import fastifyStatic from '@fastify/static';
 import type { Container } from './container.js';
 import { registerRoutes } from './interface/routes.js';
 import { attachSocket } from './interface/socket.js';
+import { maybeRedirectToLeader, registerLeaderProxy, wrapUpgradeForLeaderProxy } from './infrastructure/leader-proxy.js';
 
 /** Map a browser path to an exported HTML file (Next static export uses flat `admin.html`). */
 function resolveStaticHtml(webOut: string, url: string): string {
@@ -37,12 +38,31 @@ function findWebOut(): string | null {
 /** Origins permitted to make browser requests to the agent. */
 function allowedOrigins(c: Container): string[] {
   const port = c.config.GATEWAY_PORT;
-  return [
+  const base = [
     c.config.WEB_ORIGIN,
     c.config.ONBOARDING_ORIGIN,
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
+    `http://netscanner.local:${port}`,
+    `http://netscanner.local`,
   ].filter((o): o is string => Boolean(o));
+  // LAN-wide UI: reflect any private-network Origin (trust model documented in multi-agent.md).
+  return base;
+}
+
+function isPrivateLanOrigin(origin: string): boolean {
+  try {
+    const u = new URL(origin);
+    const h = u.hostname;
+    if (h === 'localhost' || h === 'netscanner.local' || h.endsWith('.local')) return true;
+    if (/^127\./.test(h)) return true;
+    if (/^10\./.test(h)) return true;
+    if (/^192\.168\./.test(h)) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(h)) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 /** Builds the Fastify app + Socket.IO hub from an assembled container. */
@@ -50,7 +70,13 @@ export async function buildServer(c: Container) {
   const app = Fastify({ loggerInstance: c.logger });
   const origins = new Set(allowedOrigins(c));
 
-  await app.register(cors, { origin: [...origins] });
+  await app.register(cors, {
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (origins.has(origin) || isPrivateLanOrigin(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+  });
 
   // CSRF-style guard: a malicious page can still *send* a cross-origin POST even
   // though CORS hides the response. Reject state-changing requests whose Origin
@@ -58,11 +84,17 @@ export async function buildServer(c: Container) {
   app.addHook('onRequest', (request, reply, done) => {
     const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
     const origin = request.headers.origin;
-    if (mutating && origin && !origins.has(origin)) {
+    if (mutating && origin && !origins.has(origin) && !isPrivateLanOrigin(origin)) {
       reply.code(403).send({ error: 'origin not allowed' });
       return;
     }
     done();
+  });
+
+  // Non-leaders: keep http://netscanner.local/ via reverse-proxy (MDNS), or redirect (no MDNS).
+  registerLeaderProxy(app as never, c.cluster, c.config);
+  app.addHook('onRequest', async (request, reply) => {
+    await maybeRedirectToLeader(request, reply, c.cluster, c.config);
   });
 
   registerRoutes(app, c);
@@ -85,6 +117,7 @@ export async function buildServer(c: Container) {
 
   app.addHook('onReady', async () => {
     attachSocket(app.server, c);
+    wrapUpgradeForLeaderProxy(app as never, c.cluster, c.config);
   });
 
   return app;

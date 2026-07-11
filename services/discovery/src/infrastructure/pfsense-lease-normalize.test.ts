@@ -68,6 +68,26 @@ describe('mergePfSenseLeases', () => {
     expect(merged[0]?.online).toBe(false);
   });
 
+  it('marks WAN* ARP neighbors online (ISP CPE next-hops)', () => {
+    expect(
+      normalizePfSenseArpLease({
+        ip: '192.168.15.1',
+        mac: '84:0b:bb:77:4a:30',
+        interface: 'WAN_VIVO',
+      }),
+    ).toMatchObject({ online: true, interface: 'WAN_VIVO' });
+  });
+
+  it('keeps LAN ARP as offline hint (avoid inventory flood)', () => {
+    expect(
+      normalizePfSenseArpLease({
+        ip: '10.0.1.10',
+        mac: 'aa:bb:cc:dd:ee:ff',
+        interface: 'opt4',
+      })?.online,
+    ).toBe(false);
+  });
+
   it('defaults missing dhcp state to offline', () => {
     expect(normalizePfSenseLease({ ip: '10.0.0.3', mac: '00:11:22:33:44:66' })?.online).toBe(false);
   });

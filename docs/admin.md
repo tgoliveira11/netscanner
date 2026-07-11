@@ -26,7 +26,7 @@ Secrets (`PFSENSE_API_KEY`, router passwords, etc.) are masked in the UI (`•�
 
 ## pfSense network control
 
-When `PFSENSE_CONTROL_ENABLED=true`, NetScanner can write to pfSense via REST API:
+When `PFSENSE_CONTROL_ENABLED=true`, NetScanner can write to pfSense via REST API (multi-agent: only the **control leader** — see [multi-agent.md](./multi-agent.md)):
 
 | Alias | Purpose | Required firewall rule |
 |-------|---------|----------------------|

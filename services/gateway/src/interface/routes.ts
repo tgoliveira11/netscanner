@@ -17,6 +17,7 @@ import { registerAdminRoutes } from './admin-routes.js';
 import { registerSiteRoutes } from './site-routes.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { registerControlRoutes } from './control-routes.js';
+import { registerClusterRoutes } from './cluster-routes.js';
 
 const VERSION = '0.2.0';
 
@@ -38,8 +39,10 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
   registerSiteRoutes(app, c);
   registerDiagnosticsRoutes(app, c);
   registerControlRoutes(app, c);
-  app.get('/api/health', async (_request, reply): Promise<HealthResponse> => {
+  registerClusterRoutes(app, c);
+  app.get('/api/health', async (_request, reply): Promise<HealthResponse & { cluster?: unknown }> => {
     reply.header('access-control-allow-origin', '*');
+    const cluster = c.cluster.status();
     return {
       status: 'ok',
       capabilities: {
@@ -48,6 +51,14 @@ export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Cont
         nmapOffReason: c.capabilities.nmapOffReason,
       },
       version: VERSION,
+      cluster: {
+        role: cluster.role,
+        agentId: c.agentIdentity.id,
+        isInventoryLeader: cluster.isInventoryLeader,
+        isControlLeader: cluster.isControlLeader,
+        mdnsName: cluster.mdnsName,
+        peers: cluster.peers.length,
+      },
     };
   });
 
