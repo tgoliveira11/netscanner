@@ -21,6 +21,9 @@ export function registerLeaderProxy(
   app.addHook('onRequest', (async (request: FastifyRequest, reply: FastifyReply) => {
     if (cluster.isInventoryLeader()) return;
     if (!config.MDNS_ENABLED) return;
+    // Local RF scan must run on this host (CoreWLAN) — never proxy to the leader.
+    const path = request.url.split('?')[0] ?? '';
+    if (path === '/api/diagnostics/wifi-rf') return;
     const targetBase = cluster.inventoryLeaderProxyUrl();
     if (!targetBase) return;
     await proxyHttp(request, reply, targetBase);

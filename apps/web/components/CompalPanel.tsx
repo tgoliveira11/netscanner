@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CompalAdminDevice, CompalStep, CompalStreamEvent } from '@netscanner/contracts';
-import { api } from '../lib/api';
+import { api, apiBase } from '../lib/api';
 import { useBackgroundDataStore, compalDeviceNeedsWatch } from '../lib/background-data-store';
 import { LoadingSpinner } from './LoadingSpinner';
 
@@ -151,12 +151,12 @@ export function CompalPanel() {
             disabled={refreshing}
             className="btn btn-ghost text-xs"
           >
-            {refreshing || autoPolling ? 'Refreshing…' : 'Refresh'}
+            {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
         {autoPolling && (
           <p className="text-xs text-muted">
-            Auto-refreshing while an AP is offline or stabilizing after an action — idle when all look stable.
+            Watching after an action or a slow offline recovery check — idle once all APs stay online.
           </p>
         )}
         {(error || actionError) && !activity?.running && (
@@ -201,8 +201,8 @@ export function CompalPanel() {
                 )}
                 {d.ok && d.meshEnabled == null && (
                   <p className="mt-1 text-xs text-muted">
-                    Mesh unavailable
-                    {pollingThis ? ' — auto-refreshing…' : ' — try Refresh.'}
+                    Mesh unavailable on this AP
+                    {pollingThis ? ' — waiting after action…' : ' — try Refresh if you expect it.'}
                   </p>
                 )}
                 {d.ok && d.ssidRows.length > 0 && (
@@ -234,6 +234,15 @@ export function CompalPanel() {
                   <p className="mt-2 text-xs text-muted">No active SSIDs detected.</p>
                 )}
                 <div className="mt-3 flex flex-wrap gap-2">
+                  <a
+                    href={`${apiBase()}/api/admin/compal/open-ui?baseUrl=${encodeURIComponent(d.url)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-ghost text-xs"
+                    title="Open LuCI on the AP (same network SSO, no proxy)"
+                  >
+                    Open UI
+                  </a>
                   <button
                     type="button"
                     disabled={!d.ok || busy}

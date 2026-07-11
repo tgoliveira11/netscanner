@@ -7,6 +7,7 @@ import {
   type CompalStreamEvent,
 } from '@netscanner/contracts';
 import {
+  buildCompalOpenUiHtml,
   probeCompalAdmin,
   probeOpenWrtWireless,
   rebootCompalTarget,
@@ -131,6 +132,48 @@ export async function registerAdminRoutes(app: FastifyInstance, c: Container): P
     if (!targets.length) return { configured: false, devices: [] };
     const devices = await probeCompalAdmin(targets, c.logger);
     return { configured: true, devices };
+  });
+
+  /**
+   * Same-network SSO bounce into Compal LuCI (no proxy).
+   * Prepares RSA login fields; the browser POSTs to the AP so the session cookie sticks there.
+   */
+  app.get('/api/admin/compal/open-ui', async (request, reply) => {
+    const baseUrl = String((request.query as { baseUrl?: string }).baseUrl ?? '').trim();
+    if (!baseUrl) return reply.status(400).send({ error: 'baseUrl required' });
+    const target = findCompalTarget(await listCompalTargets(c), baseUrl);
+    if (!target) return reply.status(404).send({ error: 'Compal target not found' });
+    if (!target.username || !target.password) {
+      return reply.status(400).send({ error: 'Compal credentials missing' });
+    }
+    try {
+      const html = await buildCompalOpenUiHtml(target);
+      return reply
+        .header('Cache-Control', 'no-store')
+        .type('text/html; charset=utf-8')
+        .send(html);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      c.logger.warn({ url: target.baseUrl, error: msg }, 'Compal open-ui SSO failed');
+      const host = (() => {
+        try {
+          return new URL(target.baseUrl).hostname;
+        } catch {
+          return target.baseUrl;
+        }
+      })();
+      const direct = target.baseUrl.replace(/\/+$/, '') || target.baseUrl;
+      const esc = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return reply
+        .status(502)
+        .header('Cache-Control', 'no-store')
+        .type('text/html; charset=utf-8')
+        .send(`<!DOCTYPE html><html><body style="font:14px system-ui;background:#0f172a;color:#e2e8f0;padding:2rem">
+<p>Could not prepare login for <strong>${esc(host)}</strong>: ${esc(msg)}</p>
+<p><a style="color:#7dd3fc" href="${esc(direct)}" target="_blank" rel="noopener">Open ${esc(host)} without SSO</a></p>
+</body></html>`);
+    }
   });
 
   /** pfSense dashboard: system, gateways, VPN, egress inference. */

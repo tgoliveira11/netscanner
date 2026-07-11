@@ -5,6 +5,7 @@ import type { Logger } from '@netscanner/logger';
 import { listScanCidrs } from '@netscanner/os-abstraction';
 import type { DhcpFingerprint, DiscoverHostsUseCase, IPassiveSignalStore } from '@netscanner/discovery';
 import type { FingerprintHostUseCase, ITrafficSource, TrafficMonitor } from '@netscanner/scanner';
+import type { CveFeedRefreshWorker } from '@netscanner/classification';
 import type { IDeviceRepository } from '@netscanner/inventory';
 import type { DeviceEnrichmentService } from './device-enrichment.service.js';
 import type { RunScanUseCase } from './run-scan.use-case.js';
@@ -32,6 +33,7 @@ export interface BackgroundWorkerDeps {
   trafficSource?: ITrafficSource;
   trafficMonitor?: TrafficMonitor;
   dnsActivityLog?: DnsActivityLog;
+  cveRefresh?: CveFeedRefreshWorker;
   getSiteId: () => string;
   needsSiteConfirmation?: () => boolean;
   refreshSite?: () => Promise<void>;
@@ -48,6 +50,7 @@ export interface BackgroundWorkerDeps {
 export class BackgroundWorker {
   private enrichTimer: ReturnType<typeof setInterval> | null = null;
   private scanTimer: ReturnType<typeof setInterval> | null = null;
+  private cveTimer: ReturnType<typeof setInterval> | null = null;
   private enrichRunning = false;
   private scanRunning = false;
   private dhcpUnsub: (() => void) | null = null;
@@ -82,15 +85,21 @@ export class BackgroundWorker {
     } else {
       logger.info({ enrichMs }, 'background worker started (light scan disabled)');
     }
+
+    // Daily CVE index refresh (no-op when CVE_NVD_SYNC=false).
+    setTimeout(() => void this.refreshCveIndex(), 45_000);
+    this.cveTimer = setInterval(() => void this.refreshCveIndex(), 24 * 60 * 60 * 1000);
   }
 
   stop(): void {
     if (this.enrichTimer) clearInterval(this.enrichTimer);
     if (this.scanTimer) clearInterval(this.scanTimer);
+    if (this.cveTimer) clearInterval(this.cveTimer);
     this.dhcpUnsub?.();
     this.passiveUnsub?.();
     this.enrichTimer = null;
     this.scanTimer = null;
+    this.cveTimer = null;
     this.dhcpUnsub = null;
     this.passiveUnsub = null;
   }
@@ -102,7 +111,7 @@ export class BackgroundWorker {
   }
 
   private async onPassiveSignal(ip: string): Promise<void> {
-    if (ip.startsWith('lldp:')) return;
+    if (ip.startsWith('lldp:') || ip.startsWith('tshark:')) return;
     const siteId = this.deps.getSiteId();
     const device = await this.deps.repo.findByIp(siteId, ip);
     if (!device) return;
@@ -270,6 +279,32 @@ export class BackgroundWorker {
       logger.warn(
         { error: error instanceof Error ? error.message : error },
         'background traffic sample failed',
+      );
+    }
+  }
+
+  private async refreshCveIndex(): Promise<void> {
+    const { cveRefresh, config, repo, logger } = this.deps;
+    if (!cveRefresh || !config.CVE_NVD_SYNC) return;
+    try {
+      const devices = await repo.list({ siteId: this.deps.getSiteId() });
+      const keywords = new Set<string>();
+      for (const d of devices) {
+        if (d.brand) keywords.add(d.brand.toLowerCase());
+        if (d.os?.name) keywords.add(d.os.name.toLowerCase());
+        for (const s of d.services ?? []) {
+          if (s.product) keywords.add(String(s.product).toLowerCase());
+        }
+      }
+      const result = await cveRefresh.refresh({
+        enabled: true,
+        keywords: [...keywords],
+      });
+      logger.info(result, 'CVE NVD subset refresh finished');
+    } catch (error) {
+      logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'CVE NVD subset refresh failed — keeping local index',
       );
     }
   }

@@ -105,9 +105,14 @@ export function layoutVlanTree(list: Device[], topology: TopologyResponse | null
   if (gatewayId && !byId.has(gatewayId)) {
     gatewayId = resolveCollapsedGatewayId(gatewayId, list) ?? gatewayId;
   }
+  if (gatewayId && !byId.has(gatewayId)) {
+    const gwMeta = topology?.nodes?.find((n) => n.role === 'gateway' && byId.has(n.id));
+    if (gwMeta) gatewayId = gwMeta.id;
+  }
 
   if (!gatewayId || !byId.has(gatewayId)) {
-    return { nodes: [], edges: [], width: MIN_WIDTH, height: 200 };
+    // Keep edges so a brief device-map miss does not look like a full graph wipe.
+    return { nodes: [], edges, width: MIN_WIDTH, height: 200 };
   }
 
   const childrenOf = new Map<string, string[]>();

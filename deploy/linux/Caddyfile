@@ -1,0 +1,36 @@
+# NetScanner LAN HTTPS — Caddy internal CA; leaf certs auto-renew (~12h).
+# :80 stays with NetScanner (http://netscanner.local/). This service only binds :443.
+#
+# Install on the box:
+#   sudo cp deploy/linux/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl enable --now caddy
+#   sudo cp /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt \
+#     /var/lib/netscanner/caddy-root.crt
+#
+# Trust on macOS (once per device):
+#   open https://netscanner.local/netscanner-ca.crt
+#   Keychain Access → login → find "Caddy Local Authority" → Trust → Always Trust
+#   Or: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain caddy-root.crt
+{
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+https://netscanner.local, https://192.168.40.110 {
+	tls internal
+	encode gzip
+
+	handle /netscanner-ca.crt {
+		root * /var/lib/netscanner
+		rewrite * /caddy-root.crt
+		header Content-Type application/x-x509-ca-cert
+		header Content-Disposition "attachment; filename=\"netscanner-ca.crt\""
+		file_server
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:4000 {
+			flush_interval -1
+		}
+	}
+}

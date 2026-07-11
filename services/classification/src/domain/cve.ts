@@ -1,10 +1,19 @@
 import type { CveFinding } from '@netscanner/contracts';
 import { formatCpe, type Cpe } from './cpe.js';
+import {
+  CVE_INDEX_SEED,
+  versionMatchesRange,
+  type CveIndexEntry,
+} from './cve-index.js';
+import { compareVersions } from './cve-index.js';
+
+/** Re-export for existing importers (`from './cve.js'` / tests). */
+export { compareVersions };
 
 /**
  * Port for a known-vulnerability database (DIP). The bundled StaticCveResolver
- * ships a small curated seed so it works offline out of the box; a real
- * NvdCveResolver (indexed NVD feed) can implement the same interface later.
+ * ships a curated offline seed; IndexedCveResolver adds a local JSON index and
+ * optional NVD subset refresh.
  */
 export interface ICveResolver {
   match(cpes: readonly Cpe[]): CveFinding[];
@@ -21,25 +30,25 @@ interface SeedEntry {
   summary: string;
 }
 
-/** Compare dotted numeric versions: -1 / 0 / 1. Non-numeric parts ignored. */
-export function compareVersions(a: string, b: string): number {
-  const pa = a.split(/[^0-9]+/).filter(Boolean).map(Number);
-  const pb = b.split(/[^0-9]+/).filter(Boolean).map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
-    if (x !== y) return x < y ? -1 : 1;
-  }
-  return 0;
-}
 const lt = (max: string) => (v: string) => compareVersions(v, max) < 0;
 const between = (min: string, maxExcl: string) => (v: string) =>
   compareVersions(v, min) >= 0 && compareVersions(v, maxExcl) < 0;
 
+function indexEntryToSeed(e: CveIndexEntry): SeedEntry {
+  return {
+    vendor: e.vendor,
+    product: e.product,
+    affected: e.versionRange ? (v) => versionMatchesRange(v, e.versionRange) : undefined,
+    cveId: e.cveId,
+    cvss: e.cvss,
+    severity: e.severity,
+    summary: e.summary,
+  };
+}
+
 /**
- * Curated starter set of well-known CVEs. Deliberately small and conservative;
- * grow it or swap in a full NVD feed. Findings without a matched version are
- * reported as `fuzzy` ("potentially affected").
+ * Small legacy seed kept for focused unit tests. Production default uses the
+ * expanded CVE_INDEX_SEED via StaticCveResolver / IndexedCveResolver.
  */
 export const CVE_SEED: SeedEntry[] = [
   {
@@ -71,9 +80,13 @@ export const CVE_SEED: SeedEntry[] = [
   },
 ];
 
-/** Offline resolver backed by the curated CVE_SEED. */
+/** Offline resolver. Defaults to the expanded index seed. */
 export class StaticCveResolver implements ICveResolver {
-  constructor(private readonly seed: readonly SeedEntry[] = CVE_SEED) {}
+  private readonly seed: readonly SeedEntry[];
+
+  constructor(seed?: readonly SeedEntry[]) {
+    this.seed = seed ?? CVE_INDEX_SEED.map(indexEntryToSeed);
+  }
 
   match(cpes: readonly Cpe[]): CveFinding[] {
     const findings: CveFinding[] = [];
@@ -85,10 +98,10 @@ export class StaticCveResolver implements ICveResolver {
         let confidence: CveFinding['confidence'];
         if (entry.affected) {
           if (cpe.version) {
-            if (!entry.affected(cpe.version)) continue; // version known & not affected
+            if (!entry.affected(cpe.version)) continue;
             confidence = 'exact';
           } else {
-            confidence = 'fuzzy'; // product matches, version unknown → potentially affected
+            confidence = 'fuzzy';
           }
         } else {
           confidence = 'fuzzy';

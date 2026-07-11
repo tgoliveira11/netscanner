@@ -109,6 +109,24 @@ function parseBand(raw: string | null | undefined): WifiAp['band'] {
   return undefined;
 }
 
+async function macosConsoleUser(): Promise<{ name: string; uid: number } | null> {
+  try {
+    const { stdout } = await execFileAsync('stat', ['-f', '%Su', '/dev/console'], { timeout: 3_000 });
+    const name = stdout.trim();
+    if (!name || name === 'root' || name === '_mbsetupuser') return null;
+    const idOut = await execFileAsync('id', ['-u', name], { timeout: 3_000 });
+    const uid = Number(idOut.stdout.trim());
+    if (!Number.isFinite(uid)) return null;
+    return { name, uid };
+  } catch {
+    return null;
+  }
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Active scan via CoreWLAN (real SSID names on macOS 14.4+). */
 async function scanViaCoreWlan(): Promise<{
   aps: WifiAp[];
@@ -119,10 +137,37 @@ async function scanViaCoreWlan(): Promise<{
 }> {
   if (!(await isReadable(coreWlanSrc))) return { aps: [], currentSsid: null };
 
-  const attempts: Array<{ cmd: string; args: string[]; cwd?: string }> = [
-    // Prefer `swift main.swift` — ad-hoc compiled binaries lack Location Services access on macOS 14.4+.
-    { cmd: 'swift', args: [coreWlanSrc], cwd: nativeDir },
-  ];
+  type Attempt = { cmd: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv };
+  const attempts: Attempt[] = [];
+
+  // LaunchDaemon runs as root — CoreWLAN needs the console user's GUI/Location context.
+  const consoleUser = typeof process.getuid === 'function' && process.getuid() === 0
+    ? await macosConsoleUser()
+    : null;
+  if (consoleUser) {
+    const swiftCmd = `/usr/bin/swift ${shellSingleQuote(coreWlanSrc)}`;
+    attempts.push({
+      cmd: '/bin/launchctl',
+      args: ['asuser', String(consoleUser.uid), '/usr/bin/su', consoleUser.name, '-c', swiftCmd],
+      cwd: nativeDir,
+    });
+    if (await isExecutable(coreWlanBin)) {
+      attempts.push({
+        cmd: '/bin/launchctl',
+        args: [
+          'asuser',
+          String(consoleUser.uid),
+          '/usr/bin/su',
+          consoleUser.name,
+          '-c',
+          shellSingleQuote(coreWlanBin),
+        ],
+      });
+    }
+  }
+
+  // Prefer `swift main.swift` — ad-hoc compiled binaries lack Location Services access on macOS 14.4+.
+  attempts.push({ cmd: 'swift', args: [coreWlanSrc], cwd: nativeDir });
   if (await isExecutable(coreWlanBin)) {
     attempts.push({ cmd: coreWlanBin, args: [] });
   }
@@ -140,9 +185,10 @@ async function scanViaCoreWlan(): Promise<{
   for (const attempt of attempts) {
     try {
       const { stdout } = await execFileAsync(attempt.cmd, attempt.args, {
-        timeout: attempt.cmd === 'swift' ? 90_000 : 45_000,
+        timeout: attempt.args.includes('swift') || attempt.cmd === 'swift' ? 90_000 : 45_000,
         maxBuffer: 4 * 1024 * 1024,
         cwd: attempt.cwd,
+        env: attempt.env,
       });
       const result = parseCoreWlanJson(stdout);
       if (!result.aps.length) continue;

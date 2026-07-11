@@ -26,6 +26,18 @@ describe('analyzeDns', () => {
     expect(dnsVendorHints(profile)).toContain('Tuya');
   });
 
+  it('categorizes Claro/Vivo CPE and Smart Life domains', () => {
+    const profile = analyzeDns([
+      'acs.claro.com.br',
+      'cwmp.vivo.com.br',
+      'a1.tuyaus.com',
+      'device.smartlife.iot',
+    ]);
+    expect(profile.categories).toEqual(
+      expect.arrayContaining(['isp-cpe', 'iot-cloud']),
+    );
+  });
+
   it('raises an info flag for IoT devices contacting many endpoints', () => {
     const domains = ['x.tuyaus.com', ...Array.from({ length: 9 }, (_, i) => `h${i}.example${i}.com`)];
     const flags = dnsSecurityFlags(analyzeDns(domains));

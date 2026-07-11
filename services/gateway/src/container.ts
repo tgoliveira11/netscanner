@@ -57,6 +57,9 @@ import {
   UnifiConnectionSource,
   OmadaConnectionSource,
   PfRestTrafficSource,
+  PfSshTrafficSource,
+  CompositeTrafficSource,
+  NtopngTrafficAdapter,
   resolvePfSenseSshHost,
   CloudflareSpeedTester,
   TrafficMonitor,
@@ -68,6 +71,8 @@ import {
   BayesianClassificationEngine,
   ClassifyDeviceUseCase,
   SecurityAnalyzer,
+  IndexedCveResolver,
+  CveFeedRefreshWorker,
   defaultRules,
 } from '@netscanner/classification';
 import {
@@ -747,19 +752,60 @@ export async function buildContainer(): Promise<Container> {
   }
 
   const trafficMonitor = new TrafficMonitor();
-  let trafficSource: ITrafficSource | undefined;
+  const trafficSources: ITrafficSource[] = [];
   if (config.PFSENSE_TRAFFIC_ENABLED && config.PFSENSE_URL?.trim() && config.PFSENSE_API_KEY?.trim()) {
-    trafficSource = new PfRestTrafficSource(logger, {
-      baseUrl: config.PFSENSE_URL,
-      apiKey: config.PFSENSE_API_KEY,
-      insecureTls: config.PFSENSE_INSECURE_TLS,
-    });
+    trafficSources.push(
+      new PfRestTrafficSource(logger, {
+        baseUrl: config.PFSENSE_URL,
+        apiKey: config.PFSENSE_API_KEY,
+        insecureTls: config.PFSENSE_INSECURE_TLS,
+      }),
+    );
     logger.info({ url: config.PFSENSE_URL }, 'pfSense REST traffic sampling enabled (firewall/states)');
-  } else if (config.PFSENSE_TRAFFIC_ENABLED) {
+  }
+  if (config.PFSENSE_TRAFFIC_ENABLED && config.PFSENSE_URL?.trim() && config.PFSENSE_SSH_PASSWORD?.trim()) {
+    const sshHost = resolvePfSenseSshHost(config.PFSENSE_URL);
+    if (sshHost) {
+      trafficSources.push(
+        new PfSshTrafficSource(logger, {
+          host: sshHost,
+          port: config.PFSENSE_SSH_PORT,
+          username: config.PFSENSE_SSH_USER,
+          password: config.PFSENSE_SSH_PASSWORD,
+        }),
+      );
+      logger.info({ host: sshHost }, 'pfSense SSH states traffic sampling enabled');
+    }
+  } else if (config.PFSENSE_TRAFFIC_ENABLED && trafficSources.length === 0) {
     logger.warn(
-      'PFSENSE_TRAFFIC_ENABLED but PFSENSE_URL + PFSENSE_API_KEY are required — traffic/relations peers disabled (SSH is only used for DNS passive)',
+      'PFSENSE_TRAFFIC_ENABLED but need PFSENSE_URL + (API_KEY and/or SSH_PASSWORD) — traffic/relations peers disabled',
     );
   }
+  if (config.NTOPNG_URL?.trim()) {
+    trafficSources.push(
+      new NtopngTrafficAdapter(logger, {
+        baseUrl: config.NTOPNG_URL,
+        token: config.NTOPNG_TOKEN,
+      }),
+    );
+    logger.info({ url: config.NTOPNG_URL }, 'ntopng traffic adapter enabled');
+  }
+  const trafficSource: ITrafficSource | undefined =
+    trafficSources.length === 0
+      ? undefined
+      : trafficSources.length === 1
+        ? trafficSources[0]
+        : new CompositeTrafficSource(trafficSources);
+
+  const cveIndexPath = path.join(
+    process.env.NETSCANNER_HOME?.trim() ||
+      path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.netscanner'),
+    'cve',
+    'index.json',
+  );
+  const cveResolver = new IndexedCveResolver(cveIndexPath);
+  const cveRefresh = new CveFeedRefreshWorker(cveResolver);
+  logger.info({ path: cveIndexPath, entries: cveResolver.getEntries().length }, 'CVE index ready');
 
   const enrichment = new DeviceEnrichmentService({
     classify,
@@ -771,6 +817,9 @@ export async function buildContainer(): Promise<Container> {
     snmp,
     connectionSource,
     trafficMonitor,
+    cveResolver,
+    dnsIntelTopN: config.DNS_INTEL_TOP_N,
+    trafficSpikeBps: config.TRAFFIC_SPIKE_BPS,
     getSiteId,
   });
 
@@ -784,12 +833,15 @@ export async function buildContainer(): Promise<Container> {
       iface: primaryIface?.name ?? 'en0',
       lldpEnabled: config.LLDP_PASSIVE_ENABLED && capabilities.elevated,
       lldpStream: config.LLDP_STREAM_ENABLED,
+      lldpdEnabled: config.LLDPD_ENABLED,
       dnsEnabled: config.PASSIVE_DNS_ENABLED,
       remoteDns,
       p0fEnabled: config.P0F_PASSIVE_ENABLED,
       cdpEnabled: config.CDP_PASSIVE_ENABLED,
       igmpEnabled: config.PASSIVE_IGMP_ENABLED,
       dhcpv6Enabled: config.PASSIVE_DHCPV6_ENABLED,
+      tsharkDeepEnabled: config.TSHARK_DEEP_ENABLED,
+      netdiscoverEnabled: config.NETDISCOVER_ENABLED,
       elevated: capabilities.elevated,
     });
     if (remoteDns.length) {
@@ -840,6 +892,7 @@ export async function buildContainer(): Promise<Container> {
     trafficSource,
     trafficMonitor,
     dnsActivityLog,
+    cveRefresh,
     getSiteId,
     needsSiteConfirmation: () => activeSite.needsConfirmation(),
     refreshSite: async () => {

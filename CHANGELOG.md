@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Compal Open UI (same-network SSO)** — Integrations card link opens the AP’s native LuCI in a new tab without CPE proxy: gateway prepares RSA login fields; the browser POSTs to the AP so `sysauth` sticks on the AP origin.
+- **Box discovery enhancements** — expanded DNS domain catalog + `DNS_INTEL_TOP_N`; offline `IndexedCveResolver` (`NETSCANNER_HOME/cve/index.json`, optional `CVE_NVD_SYNC`); composite pfSense traffic (REST + SSH states) with `TRAFFIC_SPIKE`; `tshark` deep capture (SNI/HTTP Host/DHCP); `lldpctl` neighbor poll; passive `netdiscover` ARP; dedicated Linux package/env defaults.
+- **LAN HTTPS via Caddy** — optional systemd Caddy on the dedicated box (`deploy/linux/Caddyfile`): `https://netscanner.local` / `https://192.168.40.110` with internal CA (auto-renewed leaf certs); NetScanner HTTP on `:80`/`:4000` unchanged; CA at `/netscanner-ca.crt`.
+
+### Changed
+- **Compal background poll** — idle when all APs are online (including permanent `mesh unknown`); fast poll only in post-action watch windows; slow ~90s recovery check when offline; silent polls no longer flash the Refresh button.
+- **Scan event fan-in** — domain WebSocket updates coalesce (~120ms) so the dashboard stays navigable during high-concurrency scans; topology structure refresh waits for `scan.completed` instead of every `device.new`.
+- **Page bootstrap** — Dashboard / Topology / Relations rely on `StoreBootstrap` only (no remount wipe of warm inventory).
+
+### Fixed
+- **Nav unusable during scan** — header stays above the device drawer; main-thread jank from per-host store/topology thrash reduced via event batching.
+- **Topology “graph disappears”** — single-flight topology fetch; never replace a good graph with an empty rebuild; keep layout/pan-zoom across gateway UUID churn; render last cached positions when the tree briefly lacks a gateway in the device map.
+- **Topology blank / hanging** — `/api/topology` no longer waits on sequential Compal LuCI timeouts (stale-while-revalidate wireless, per-AP 8s cap, SNMP budget, single-flight build); UI aborts topology fetch after 15s.
+- **netscanner.local slow/hang on macOS** — keep answering mDNS AAAA (link-local on the advertise NIC) so dual-stack lookup does not wait ~5s; publish only `CLUSTER_ADVERTISE_HOST` as A when set.
+
 ## [0.2.1] - 2026-07-11
 
 ### Added

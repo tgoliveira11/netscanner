@@ -39,6 +39,10 @@ export interface DeviceEnrichmentDeps {
   trafficMonitor?: TrafficMonitor;
   /** Known-vulnerability resolver (#2). Defaults to the offline curated set. */
   cveResolver?: ICveResolver;
+  /** How many top domains to keep in dnsProfile. */
+  dnsIntelTopN?: number;
+  /** Absolute rate (bps) for TRAFFIC_SPIKE flag. */
+  trafficSpikeBps?: number;
   getSiteId: () => string;
 }
 
@@ -129,11 +133,17 @@ export class DeviceEnrichmentService {
 
     mergedSignals = applyConnectionSignals(input.mac, mergedSignals, this.deps.connectionSource);
 
-    // #1 DNS intelligence: analyze passively-observed query names into a profile
+    // #1 DNS intelligence: analyze passively-observed query names + TLS SNI / HTTP Host
     // BEFORE classification so the DnsClassificationRule can vote on it.
+    const nameBag = new Set<string>();
     const dnsQueries = mergedSignals['dnsRecentQueries'];
-    if (Array.isArray(dnsQueries) && dnsQueries.length > 0) {
-      const dnsProfile = analyzeDns(dnsQueries.map(String));
+    if (Array.isArray(dnsQueries)) for (const q of dnsQueries) if (q) nameBag.add(String(q));
+    for (const key of ['tlsSniRecent', 'httpHostRecent'] as const) {
+      const arr = mergedSignals[key];
+      if (Array.isArray(arr)) for (const q of arr) if (q) nameBag.add(String(q));
+    }
+    if (nameBag.size > 0) {
+      const dnsProfile = analyzeDns([...nameBag], this.deps.dnsIntelTopN ?? 8);
       mergedSignals = {
         ...mergedSignals,
         dnsProfile,
@@ -169,10 +179,20 @@ export class DeviceEnrichmentService {
     const traffic = this.deps.trafficMonitor?.get(input.ip);
     if (traffic) mergedSignals = { ...mergedSignals, traffic };
 
+    const trafficFlags = [];
+    if (traffic && this.deps.trafficSpikeBps && traffic.rateBps >= this.deps.trafficSpikeBps) {
+      trafficFlags.push({
+        code: 'TRAFFIC_SPIKE',
+        severity: 'medium' as const,
+        message: `Host egress/ingress rate ${Math.round(traffic.rateBps / 1e6)} Mbps exceeds spike threshold.`,
+      });
+    }
+
     const securityFlags = [
       ...classification.securityFlags,
       ...(dnsProfile ? dnsSecurityFlags(dnsProfile as never) : []),
       ...cvesToSecurityFlags(cves),
+      ...trafficFlags,
     ];
     const riskScore = scoreRisk(cves, securityFlags);
 
@@ -315,10 +335,19 @@ export class DeviceEnrichmentService {
 
   needsDnsEnrichment(device: Device): boolean {
     const passive = this.mergePassiveSignals(device.ip, device.mac, {});
-    const incoming = passive['dnsRecentQueries'];
-    if (!Array.isArray(incoming) || incoming.length === 0) return false;
-    const stored = device.signals['dnsRecentQueries'];
-    return JSON.stringify(stored ?? []) !== JSON.stringify(incoming);
+    const incomingQueries = passive['dnsRecentQueries'];
+    const incomingSni = passive['tlsSniRecent'];
+    const incomingHttp = passive['httpHostRecent'];
+    const hasIncoming =
+      (Array.isArray(incomingQueries) && incomingQueries.length > 0) ||
+      (Array.isArray(incomingSni) && incomingSni.length > 0) ||
+      (Array.isArray(incomingHttp) && incomingHttp.length > 0);
+    if (!hasIncoming) return false;
+    return (
+      JSON.stringify(device.signals['dnsRecentQueries'] ?? []) !== JSON.stringify(incomingQueries ?? []) ||
+      JSON.stringify(device.signals['tlsSniRecent'] ?? []) !== JSON.stringify(incomingSni ?? []) ||
+      JSON.stringify(device.signals['httpHostRecent'] ?? []) !== JSON.stringify(incomingHttp ?? [])
+    );
   }
 }
 

@@ -17,7 +17,12 @@ export * from './domain/os-inference.js';
 export * from './domain/connection-inference.js';
 export * from './domain/dns-intel.js';
 export * from './domain/cpe.js';
-export * from './domain/cve.js';
+export * from './domain/cve-index.js';
+export {
+  CVE_SEED,
+  StaticCveResolver,
+  type ICveResolver,
+} from './domain/cve.js';
 export * from './domain/risk.js';
 export * from './application/classify-device.use-case.js';
 

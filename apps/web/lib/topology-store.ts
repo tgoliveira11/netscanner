@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { TopologyResponse } from '@netscanner/contracts';
+import type { Device, TopologyResponse } from '@netscanner/contracts';
 import { api } from './api';
 import {
-  layoutVlanTree,
+  layoutFromCache,
   mergeLayoutPositions,
   type CachedLayout,
   type LayoutResult,
@@ -38,6 +38,20 @@ interface TopologyState {
   invalidateStructure: () => void;
 }
 
+/** Single-flight + generation so overlapping polls cannot apply a stale empty graph. */
+let fetchGeneration = 0;
+let inFlight: Promise<void> | null = null;
+let pendingForce = false;
+
+function isEmptyTopology(res: TopologyResponse): boolean {
+  return !res.gatewayId || res.nodes.length === 0;
+}
+
+function shouldKeepPrevious(prev: TopologyResponse | null, res: TopologyResponse): boolean {
+  if (!prev || prev.nodes.length === 0) return false;
+  return isEmptyTopology(res);
+}
+
 export const useTopologyStore = create<TopologyState>((set, get) => ({
   topology: null,
   layout: null,
@@ -50,25 +64,44 @@ export const useTopologyStore = create<TopologyState>((set, get) => ({
   backgroundPolling: false,
 
   fetchTopology: async ({ force } = {}) => {
-    const { topology, loading } = get();
-    if (loading) return;
-    const isInitial = !topology;
-    set({ loading: isInitial, refreshing: !isInitial });
-    try {
-      const since = !force && topology?.revision ? topology.revision : undefined;
-      const res = await api.topology(since ? { since } : undefined);
-      if (res.unchanged) return;
+    if (force) pendingForce = true;
+    if (inFlight) return inFlight;
 
-      const prevGateway = topology?.gatewayId ?? null;
-      set({ topology: res });
-      if (prevGateway !== res.gatewayId) {
-        set({ layout: null, viewInitialized: false });
+    const run = async (): Promise<void> => {
+      const gen = ++fetchGeneration;
+      const wantForce = pendingForce;
+      pendingForce = false;
+      const { topology } = get();
+      const isInitial = !topology;
+      set({ loading: isInitial, refreshing: !isInitial });
+      try {
+        const since = !wantForce && topology?.revision ? topology.revision : undefined;
+        const res = await api.topology(since ? { since } : undefined);
+        if (gen !== fetchGeneration) return;
+        if (res.unchanged) return;
+
+        const prev = get().topology;
+        // Never let a transient empty rebuild wipe a good graph (gateway flicker / race).
+        if (shouldKeepPrevious(prev, res)) return;
+
+        // Keep layout + pan/zoom across gateway UUID churn — mergeLayoutPositions
+        // adds newcomers and drops gone ids. Only clear when the user resets view.
+        set({ topology: res });
+      } catch {
+        /* agent may be restarting — keep last good snapshot */
+      } finally {
+        if (gen === fetchGeneration) {
+          set({ loading: false, refreshing: false });
+        }
+        inFlight = null;
+        if (pendingForce) {
+          void get().fetchTopology({ force: true });
+        }
       }
-    } catch {
-      /* agent may be restarting */
-    } finally {
-      set({ loading: false, refreshing: false });
-    }
+    };
+
+    inFlight = run();
+    return inFlight;
   },
 
   applyLayout: (computed) => {
@@ -123,12 +156,33 @@ export const useTopologyStore = create<TopologyState>((set, get) => ({
   },
 }));
 
-/** Build render nodes from cached positions + live device records. */
+/**
+ * Build render nodes from cached positions + live device records.
+ * If the computed tree is briefly empty (devices not hydrated yet), keep the
+ * last good layout instead of painting a blank canvas.
+ */
 export function buildRenderLayout(
   layout: CachedLayout | null,
   computed: LayoutResult,
+  devices?: Record<string, Device>,
 ): LayoutResult {
   if (!layout) return computed;
+
+  if (computed.nodes.length === 0) {
+    if (devices && Object.keys(layout.positions).length > 0) {
+      const cached = layoutFromCache(layout, devices);
+      if (cached.nodes.length > 0) {
+        return {
+          nodes: cached.nodes,
+          edges: computed.edges,
+          width: layout.width,
+          height: layout.height,
+        };
+      }
+    }
+    return computed;
+  }
+
   const byId = new Map(computed.nodes.map((n) => [n.device.id, n]));
   const nodes: NodePos[] = [];
   for (const [id, pos] of Object.entries(layout.positions)) {
@@ -141,10 +195,14 @@ export function buildRenderLayout(
       role: pos.role,
     });
   }
+  // Newcomers not yet in cache — append from computed so they appear immediately.
+  for (const node of computed.nodes) {
+    if (!(node.device.id in layout.positions)) nodes.push(node);
+  }
   return {
     nodes,
     edges: computed.edges,
-    width: layout.width,
-    height: layout.height,
+    width: Math.max(layout.width, computed.width),
+    height: Math.max(layout.height, computed.height),
   };
 }

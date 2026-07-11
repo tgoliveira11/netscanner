@@ -9,40 +9,50 @@ import {
 
 const PFSENSE_MS = 30_000;
 const WIRELESS_MS = 60_000;
-/** Compal only auto-polls while an AP is offline / mesh-unknown / post-action. */
+/** Tick for post-action Compal watch windows (mesh/reboot). */
 const COMPAL_WATCH_MS = 10_000;
+/** Slow recovery check when an AP is offline — not a login hammer. */
+const COMPAL_OFFLINE_MS = 90_000;
 const CONTROL_MS = 60_000;
 
+/** Explicit post-action windows only (mesh toggle / reboot). */
 const compalWatchUrls = new Map<string, number>();
-const compalPrevDevices = new Map<string, { ok: boolean; mesh: boolean | null }>();
+let compalInFlight = false;
+let lastCompalOfflinePollAt = 0;
 
-function compalShouldWatch(d: { url: string; ok: boolean; meshEnabled: boolean | null }): boolean {
-  // Unreachable APs: keep probing so we notice recovery.
-  if (!d.ok) return true;
-  // Post-action / just-came-online watch window (mesh may still be unknown).
-  const deadline = compalWatchUrls.get(d.url);
+function watchDeadlineActive(url: string): boolean {
+  const deadline = compalWatchUrls.get(url);
   if (!deadline) return false;
   if (Date.now() >= deadline) {
-    compalWatchUrls.delete(d.url);
-    return false;
-  }
-  if (d.meshEnabled != null) {
-    compalWatchUrls.delete(d.url);
+    compalWatchUrls.delete(url);
     return false;
   }
   return true;
 }
 
-export function compalDeviceNeedsWatch(d: {
-  url: string;
-  ok: boolean;
-  meshEnabled: boolean | null;
-}): boolean {
-  return compalShouldWatch(d);
+/** After mesh/reboot: stop early once the AP is back and mesh is readable. */
+function pruneCompalWatchWindows(data: CompalAdminResponse): void {
+  for (const d of data.devices) {
+    if (!watchDeadlineActive(d.url)) continue;
+    if (d.ok && d.meshEnabled != null) {
+      compalWatchUrls.delete(d.url);
+    }
+  }
+}
+
+/** True while this AP has an active post-action watch window. */
+export function compalDeviceNeedsWatch(d: { url: string }): boolean {
+  return watchDeadlineActive(d.url);
 }
 
 function compalNeedsFastPoll(data: CompalAdminResponse | null): boolean {
-  return Boolean(data?.configured && data.devices.some(compalShouldWatch));
+  return Boolean(data?.configured && data.devices.some((d) => watchDeadlineActive(d.url)));
+}
+
+function compalNeedsOfflinePoll(data: CompalAdminResponse | null): boolean {
+  if (!data?.configured) return false;
+  if (!data.devices.some((d) => !d.ok)) return false;
+  return Date.now() - lastCompalOfflinePollAt >= COMPAL_OFFLINE_MS;
 }
 
 interface BackgroundDataState {
@@ -110,12 +120,13 @@ export const useBackgroundDataStore = create<BackgroundDataState>((set, get) => 
 
   watchCompalDevice: (url, durationMs = 180_000) => {
     compalWatchUrls.set(url, Date.now() + durationMs);
+    set({ compalAutoPolling: true });
   },
 
   refreshPfSense: async ({ silent } = {}) => {
     const hasData = get().pfsense != null;
     if (!silent && !hasData) set({ pfsenseLoading: true });
-    else if (hasData) set({ pfsenseRefreshing: true });
+    else if (!silent && hasData) set({ pfsenseRefreshing: true });
     try {
       set({ pfsense: await api.adminPfSenseGateways(), pfsenseError: null });
     } catch (e) {
@@ -128,7 +139,7 @@ export const useBackgroundDataStore = create<BackgroundDataState>((set, get) => 
   refreshWireless: async ({ silent } = {}) => {
     const hasData = get().wireless != null;
     if (!silent && !hasData) set({ wirelessLoading: true });
-    else if (hasData) set({ wirelessRefreshing: true });
+    else if (!silent && hasData) set({ wirelessRefreshing: true });
     try {
       set({ wireless: await api.adminWireless() });
     } catch {
@@ -139,26 +150,25 @@ export const useBackgroundDataStore = create<BackgroundDataState>((set, get) => 
   },
 
   refreshCompal: async ({ silent } = {}) => {
+    if (compalInFlight) return;
+    compalInFlight = true;
     const hasData = get().compal != null;
+    // Silent background polls must not flash the Refresh button.
     if (!silent && !hasData) set({ compalLoading: true });
-    else if (hasData) set({ compalRefreshing: true });
+    else if (!silent && hasData) set({ compalRefreshing: true });
     try {
       const data = await api.adminCompal();
-      for (const d of data.devices) {
-        const prev = compalPrevDevices.get(d.url);
-        if (prev && !prev.ok && d.ok && d.meshEnabled == null) {
-          compalWatchUrls.set(d.url, Date.now() + 120_000);
-        }
-        compalPrevDevices.set(d.url, { ok: d.ok, mesh: d.meshEnabled });
-      }
+      pruneCompalWatchWindows(data);
+      if (data.devices.some((d) => !d.ok)) lastCompalOfflinePollAt = Date.now();
       set({
         compal: data,
         compalError: silent ? get().compalError : null,
-        compalAutoPolling: compalNeedsFastPoll(data),
+        compalAutoPolling: compalNeedsFastPoll(data) || data.devices.some((d) => !d.ok),
       });
     } catch (e) {
       if (!silent) set({ compalError: e instanceof Error ? e.message : String(e) });
     } finally {
+      compalInFlight = false;
       set({ compalLoading: false, compalRefreshing: false });
     }
   },
@@ -209,13 +219,18 @@ export const useBackgroundDataStore = create<BackgroundDataState>((set, get) => 
       setInterval(() => void get().refreshPfSense({ silent: true }), PFSENSE_MS),
       setInterval(() => void get().refreshWireless({ silent: true }), WIRELESS_MS),
       setInterval(() => void get().refreshControl({ silent: true }), CONTROL_MS),
-      // Compal: no constant refresh — only while offline, mesh unknown, or post-action watch.
+      // Compal: idle when all APs are up. Fast poll only in post-action windows;
+      // offline APs get a slow recovery check (~90s), not a 10s login storm.
       setInterval(() => {
-        if (compalNeedsFastPoll(get().compal)) {
+        const data = get().compal;
+        const fast = compalNeedsFastPoll(data);
+        const offline = compalNeedsOfflinePoll(data);
+        if (fast || offline) {
           set({ compalAutoPolling: true });
           void get().refreshCompal({ silent: true });
         } else {
-          set({ compalAutoPolling: false });
+          const anyOffline = Boolean(data?.devices.some((d) => !d.ok));
+          set({ compalAutoPolling: anyOffline || fast });
         }
       }, COMPAL_WATCH_MS),
     ];

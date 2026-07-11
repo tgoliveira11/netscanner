@@ -149,11 +149,16 @@ export class LuciClient {
     let devices = await this.listIwinfoDevices(cookie, sessionId, stok);
     if (!devices.length) {
       const ssids = await this.getWirelessSsids();
-      devices = [...new Set(ssids.map((s) => s.ifname).filter(Boolean))];
+      devices = [
+        ...new Set(
+          ssids.flatMap((s) => [s.device, s.ifname]).filter((d): d is string => Boolean(d)),
+        ),
+      ];
     }
     const picked = pickScanDevices(devices);
     const out: LuciWifiNeighbor[] = [];
     const seen = new Set<string>();
+    const errors: string[] = [];
     for (const device of picked) {
       try {
         const payload = await this.ubusCall(cookie, sessionId, 'iwinfo', 'scan', { device }, stok, 30_000);
@@ -167,9 +172,13 @@ export class LuciClient {
           seen.add(key);
           out.push(parsed);
         }
-      } catch {
-        /* device may not support scan */
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errors.push(`${device}: ${msg}`);
       }
+    }
+    if (!out.length && errors.length) {
+      throw new Error(`iwinfo scan failed (${errors.join('; ')})`);
     }
     return out;
   }
@@ -303,19 +312,35 @@ export class LuciClient {
     return { cookie, sessionId };
   }
 
-  /** Compal/CBN Claro: fetch jsencrypt from device, RSA-encrypt login, capture stok. */
-  private async sessionCompal(): Promise<LuciSession> {
+  /**
+   * Build RSA-encrypted LuCI login fields for a same-network browser SSO bounce.
+   * The browser POSTs these to the AP so Set-Cookie lands on the AP origin (no proxy).
+   */
+  async prepareCompalBrowserLogin(): Promise<{
+    actionUrl: string;
+    fields: { luci_username: string; luci_password: string };
+  }> {
+    if (this.config.auth !== 'compal-rsa') throw new Error('Compal LuCI only');
     const script = await this.loadJsEncryptScript();
     const { encryptedUsername, encryptedPassword } = encryptCompalLuciCredentials(
       script,
       this.config.username,
       this.config.password,
     );
-    const form = new URLSearchParams({
-      luci_username: encryptedUsername,
-      luci_password: encryptedPassword,
-    }).toString();
-    const login = await this.request(new URL('/cgi-bin/luci', this.config.baseUrl), {
+    return {
+      actionUrl: new URL('/cgi-bin/luci', this.config.baseUrl).toString(),
+      fields: {
+        luci_username: encryptedUsername,
+        luci_password: encryptedPassword,
+      },
+    };
+  }
+
+  /** Compal/CBN Claro: fetch jsencrypt from device, RSA-encrypt login, capture stok. */
+  private async sessionCompal(): Promise<LuciSession> {
+    const prepared = await this.prepareCompalBrowserLogin();
+    const form = new URLSearchParams(prepared.fields).toString();
+    const login = await this.request(new URL(prepared.actionUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form,
@@ -502,9 +527,9 @@ function sleep(ms: number): Promise<void> {
 
 function pickScanDevices(devices: string[]): string[] {
   const unique = [...new Set(devices.filter(Boolean))];
-  if (unique.length <= 2) return unique;
-  const prefer = unique.filter((d) => /^wlan\d|^phy\d/i.test(d));
-  return (prefer.length ? prefer : unique).slice(0, 2);
+  if (unique.length <= 4) return unique;
+  const prefer = unique.filter((d) => /^(wlan|phy|wifi|ath|ra|rax|rai)\d/i.test(d));
+  return (prefer.length ? prefer : unique).slice(0, 4);
 }
 
 function parseIwinfoScanRow(row: unknown, device: string): LuciWifiNeighbor | null {

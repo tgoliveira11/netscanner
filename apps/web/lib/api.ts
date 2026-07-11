@@ -151,7 +151,11 @@ export const api = {
 
   topology: (opts?: { since?: string }) => {
     const qs = opts?.since ? `?since=${encodeURIComponent(opts.since)}` : '';
-    return apiFetch(`/api/topology${qs}`).then((r) => json<TopologyResponse>(r));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15_000);
+    return apiFetch(`/api/topology${qs}`, { signal: ctrl.signal })
+      .then((r) => json<TopologyResponse>(r))
+      .finally(() => clearTimeout(timer));
   },
 
   relations: () =>

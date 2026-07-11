@@ -1,22 +1,13 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useStore } from '../lib/store';
 import { Header } from '../components/Header';
 import { ScanControls } from '../components/ScanControls';
 import { StatsBar } from '../components/StatsBar';
 import { DeviceTable } from '../components/DeviceTable';
 import { DeviceDrawer } from '../components/DeviceDrawer';
 
+/** Dashboard — inventory/socket bootstrap lives in StoreBootstrap. */
 export default function DashboardPage() {
-  const bootstrap = useStore((s) => s.bootstrap);
-  const connect = useStore((s) => s.connect);
-
-  useEffect(() => {
-    connect();
-    bootstrap().catch(() => undefined);
-  }, [connect, bootstrap]);
-
   return (
     <main className="mx-auto w-full max-w-[1920px] space-y-4 p-4 md:p-5">
       <Header />

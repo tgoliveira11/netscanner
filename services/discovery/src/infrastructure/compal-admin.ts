@@ -248,6 +248,50 @@ export async function rebootCompalTarget(
   throw new Error('Compal AP did not come back online within 3 minutes');
 }
 
+/**
+ * HTML bounce page: browser POSTs RSA-encrypted LuCI credentials to the AP origin
+ * so sysauth cookie + stok redirect land in the user's browser (no CPE proxy).
+ */
+export async function buildCompalOpenUiHtml(target: OpenWrtScrapeTarget): Promise<string> {
+  const client = clientFor(target);
+  const { actionUrl, fields } = await client.prepareCompalBrowserLogin();
+  const host = safeHost(target.baseUrl);
+  const direct = escapeHtml(target.baseUrl.replace(/\/+$/, '') || target.baseUrl);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="referrer" content="no-referrer"/>
+  <title>Opening ${escapeHtml(host)}…</title>
+  <style>
+    body{font:14px/1.45 system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;min-height:100vh;margin:0}
+    p{opacity:.75;max-width:28rem;text-align:center}
+    a{color:#7dd3fc}
+  </style>
+</head>
+<body>
+  <p>Signing in to <strong>${escapeHtml(host)}</strong> and opening LuCI…</p>
+  <form id="ns-compal-sso" method="post" action="${escapeHtml(actionUrl)}">
+    <input type="hidden" name="luci_username" value="${escapeHtml(fields.luci_username)}"/>
+    <input type="hidden" name="luci_password" value="${escapeHtml(fields.luci_password)}"/>
+    <noscript><button type="submit">Continue to ${escapeHtml(host)}</button></noscript>
+  </form>
+  <p style="margin-top:1.5rem;font-size:12px">If nothing happens, open <a href="${direct}">${direct}</a> and sign in manually.</p>
+  <script>document.getElementById('ns-compal-sso').submit();</script>
+</body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function safeHost(baseUrl: string): string {
   try {
     return new URL(baseUrl).hostname;
