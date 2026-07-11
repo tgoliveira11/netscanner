@@ -19,7 +19,7 @@ import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { registerControlRoutes } from './control-routes.js';
 import { registerClusterRoutes } from './cluster-routes.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 function hostFromUrl(baseUrl: string): string {
   if (!baseUrl) return '';
@@ -34,8 +34,8 @@ function hostFromUrl(baseUrl: string): string {
  * REST surface for the dashboard. Controllers stay thin: validate input (zod),
  * delegate to a use case, map the result to a DTO. No business logic here (SRP).
  */
-export function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Container): void {
-  registerAdminRoutes(app, c);
+export async function registerRoutes(app: FastifyInstance<any, any, any, any>, c: Container): Promise<void> {
+  await registerAdminRoutes(app, c);
   registerSiteRoutes(app, c);
   registerDiagnosticsRoutes(app, c);
   registerControlRoutes(app, c);

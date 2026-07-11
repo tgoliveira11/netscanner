@@ -102,6 +102,9 @@ import {
   type IDevicePolicyRepository,
   InMemoryDevicePolicyRepository,
   PrismaDevicePolicyRepository,
+  PrismaCpeAccessSessionStore,
+  InMemoryCpeAccessSessionStore,
+  type ICpeAccessSessionStore,
 } from '@netscanner/inventory';
 import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IConnectionSource } from '@netscanner/contracts';
@@ -124,6 +127,7 @@ import { LogRingBuffer } from './infrastructure/log-ring-buffer.js';
 import { loadOrCreateAgentIdentity } from './application/agent-identity.js';
 import { ClusterService } from './application/cluster-service.js';
 import { CloudSyncWorker } from './application/cloud-sync-worker.js';
+import { CpeAccessService } from './application/cpe-access.service.js';
 import type { AgentIdentity } from '@netscanner/contracts';
 
 /** Fully assembled application graph handed to the HTTP/WS layer. */
@@ -172,6 +176,7 @@ export interface Container {
   agentIdentity: AgentIdentity;
   cluster: ClusterService;
   cloudSync: CloudSyncWorker;
+  cpeAccess: CpeAccessService;
 }
 
 /**
@@ -425,6 +430,29 @@ async function buildDhcpFingerprintStore(
   }
 }
 
+async function buildCpeAccessSessionStore(
+  config: AppConfig,
+  logger: Logger,
+): Promise<ICpeAccessSessionStore> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryCpeAccessSessionStore();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    logger.info('using Prisma CPE access session persistence');
+    return new PrismaCpeAccessSessionStore(prisma);
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : error },
+      'CPE session Prisma unavailable; using in-memory store',
+    );
+    return new InMemoryCpeAccessSessionStore();
+  }
+}
+
 async function buildPassiveSignalStore(
   config: AppConfig,
   logger: Logger,
@@ -552,6 +580,9 @@ export async function buildContainer(): Promise<Container> {
   await activeSite.initialize();
 
   const speedTestRepo = await buildSpeedTestRepository(config, logger);
+  const cpeSessionStore = await buildCpeAccessSessionStore(config, logger);
+  const secretCipher = SecretCipher.resolve({ envKey: config.AGENT_ENCRYPTION_KEY });
+  const cpeAccess = new CpeAccessService(config, logger, cpeSessionStore, secretCipher);
   const upsert = new UpsertDeviceUseCase(repo);
   const dhcpStore = await buildDhcpFingerprintStore(config, logger);
   const passiveStore = await buildPassiveSignalStore(config, logger);
@@ -974,6 +1005,7 @@ export async function buildContainer(): Promise<Container> {
     agentIdentity,
     cluster,
     cloudSync,
+    cpeAccess,
   };
   container.runtimeSettings = createRuntimeSettings(container, configPath);
   return container;

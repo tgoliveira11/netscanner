@@ -166,3 +166,25 @@ model DevicePolicyRecord {
   @@index([deviceId, kind])
   @@index([kind])
 }
+
+/**
+ * Persisted CPE / modem reverse-proxy sessions.
+ * Survives agent restart; closed only via Admin "Close tunnel".
+ * Password stored encrypted (SecretCipher) when available.
+ */
+model CpeAccessSessionRecord {
+  id               String   @id
+  ip               String
+  port             Int      @default(80)
+  tls              Boolean  @default(false)
+  label            String?
+  username         String
+  /** AES-GCM ciphertext (enc:v1:...) or plaintext fallback. */
+  passwordEnc      String
+  via              String   @default("direct")
+  autoLoginPending Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([ip])
+}

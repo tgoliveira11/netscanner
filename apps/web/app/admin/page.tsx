@@ -7,6 +7,7 @@ import { AdminTabs, useAdminTab } from '../../components/AdminTabs';
 import { AdminTabPanel } from '../../components/AdminTabPanel';
 import { AdminWirelessSection } from '../../components/AdminWirelessSection';
 import { CompalPanel } from '../../components/CompalPanel';
+import { CpeAccessPanel } from '../../components/CpeAccessPanel';
 import { LoadingBlock } from '../../components/LoadingSpinner';
 import { PfSenseGatewaysPanel } from '../../components/PfSenseGatewaysPanel';
 import { NetworkControlPanel } from '../../components/NetworkControlPanel';
@@ -380,6 +381,7 @@ export default function AdminPage() {
 
       <AdminTabPanel tab="integrations" active={tab}>
         <CompalPanel />
+        <CpeAccessPanel />
       </AdminTabPanel>
 
       <AdminTabPanel tab="network" active={tab}>

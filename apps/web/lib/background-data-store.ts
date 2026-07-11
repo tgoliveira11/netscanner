@@ -9,14 +9,17 @@ import {
 
 const PFSENSE_MS = 30_000;
 const WIRELESS_MS = 60_000;
-const COMPAL_MS = 30_000;
+/** Compal only auto-polls while an AP is offline / mesh-unknown / post-action. */
+const COMPAL_WATCH_MS = 10_000;
 const CONTROL_MS = 60_000;
 
 const compalWatchUrls = new Map<string, number>();
 const compalPrevDevices = new Map<string, { ok: boolean; mesh: boolean | null }>();
 
 function compalShouldWatch(d: { url: string; ok: boolean; meshEnabled: boolean | null }): boolean {
+  // Unreachable APs: keep probing so we notice recovery.
   if (!d.ok) return true;
+  // Post-action / just-came-online watch window (mesh may still be unknown).
   const deadline = compalWatchUrls.get(d.url);
   if (!deadline) return false;
   if (Date.now() >= deadline) {
@@ -205,8 +208,8 @@ export const useBackgroundDataStore = create<BackgroundDataState>((set, get) => 
     const timers = [
       setInterval(() => void get().refreshPfSense({ silent: true }), PFSENSE_MS),
       setInterval(() => void get().refreshWireless({ silent: true }), WIRELESS_MS),
-      setInterval(() => void get().refreshCompal({ silent: true }), COMPAL_MS),
       setInterval(() => void get().refreshControl({ silent: true }), CONTROL_MS),
+      // Compal: no constant refresh — only while offline, mesh unknown, or post-action watch.
       setInterval(() => {
         if (compalNeedsFastPoll(get().compal)) {
           set({ compalAutoPolling: true });
@@ -214,7 +217,7 @@ export const useBackgroundDataStore = create<BackgroundDataState>((set, get) => 
         } else {
           set({ compalAutoPolling: false });
         }
-      }, 5_000),
+      }, COMPAL_WATCH_MS),
     ];
     set({ timers });
   },

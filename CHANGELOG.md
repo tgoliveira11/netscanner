@@ -6,7 +6,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-11
+
 ### Added
+- **Generic CPE / modem access** — Admin Integrations: IP + user + password opens a same-origin reverse-proxy session (direct or pfSense SSH tunnel) so WAN modems (e.g. Claro at `192.168.0.1`, Vivo Sophia at `192.168.15.1`) are reachable from the browser; sessions persist in SQLite until **Close tunnel**; auto-login with stored credentials; **Rearm login** from Open UI.
 - **Multi-agent cluster (Fase A)** — agent identity (`agent.json`), UDP peer beacon, automatic leader election, control-leader gate for pfSense/Compal writes; Admin **Cluster** tab; `GET /api/cluster/status` and `/api/cluster/peers`. See [docs/multi-agent.md](docs/multi-agent.md).
 - **Agent profiles** — `AGENT_PROFILE=full|scan-only|ui-only` and `UI_ONLY` (Mac UI peer without elevated probes); dedicated flags `CLUSTER_DEDICATED` / `CLUSTER_PREFER_LEADER`.
 - **Linux dedicated packaging** — Docker Compose, Dockerfile, systemd unit, `.deb` skeleton, and auto-update helper under `deploy/linux/` and `scripts/build-deb.sh` / `check-update.sh`.
@@ -25,6 +28,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **WAN CPE discovery** — ARP neighbors on `WAN*` interfaces are `online` for lease upsert; explicit `SCAN_CIDRS` may include ISP handoff nets (`192.168.0.0/24`, `192.168.15.0/24`) for port/enrichment scans.
 - **Background speed tests are per-WAN** — worker runs SSH `curl --interface` for each physical WAN (not agent LB egress); gateway `srcip` maps to `hwif` when pfSense omits `interface`.
 - **Real mDNS advertise** — agents with `MDNS_ENABLED` publish `netscanner.local` (honest local A record) and bind `:80`. Cross-VLAN helpers reverse-proxy to the inventory leader so the browser keeps `http://netscanner.local/` (macOS ignores mDNS answers that point at another host’s IP). Enable on one agent per VLAN.
+
+### Fixed
+- **CPE proxy (Vivo Sophia / Claro)** — buffer POSTs with `Content-Length`; rewrite HTML/JS/CSS paths, Referer, and cookie Path; `insecureHTTPParser` for LF-only CGI headers; never HTML-inject into `.js` (jQuery); no UTF-8 round-trip for mislabeled fonts; `Cache-Control: no-store` + asset `?nsv=` cache bust; server-side upstream cookie jar; HTML fragments skip `<base>`/fetch inject; preserve `<base target>`; MenuMask no-ops; unnest `sophia_index` in `menufrm`; retarget `target=basefrm` to the top frameset; rewrite `href="#"` so `<base>` does not break accordion / Salvar.
+
 
 ## [0.2.0] - 2026-07-10
 
@@ -70,6 +77,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - pfSense REST, FritzBox, SNMP ARP, OpenWrt/Compal HTTP scrape integrations.
 - Root LaunchDaemon install for elevated scans (`install-root-service.sh`).
 
-[Unreleased]: https://github.com/tgoliveira11/netscanner/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tgoliveira11/netscanner/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/tgoliveira11/netscanner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tgoliveira11/netscanner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tgoliveira11/netscanner/releases/tag/v0.1.0

@@ -2,7 +2,7 @@
 # Skeleton .deb packager for dedicated Linux installs.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-0.2.0}"
+VERSION="${VERSION:-0.2.1}"
 ARCH="${ARCH:-amd64}"
 OUT="$ROOT/dist"
 PKG="netscanner_${VERSION}_${ARCH}"

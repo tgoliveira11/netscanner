@@ -10,3 +10,4 @@ export * from './diagnostics.js';
 export * from './network-control.js';
 export * from './admin.js';
 export * from './multi-agent.js';
+export * from './cpe-access.js';
