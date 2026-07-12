@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Compal Open UI (same-network SSO)** — Integrations card link opens the AP’s native LuCI in a new tab without CPE proxy: gateway prepares RSA login fields; the browser POSTs to the AP so `sysauth` sticks on the AP origin.
 - **Box discovery enhancements** — expanded DNS domain catalog + `DNS_INTEL_TOP_N`; offline `IndexedCveResolver` (`NETSCANNER_HOME/cve/index.json`, optional `CVE_NVD_SYNC`); composite pfSense traffic (REST + SSH states) with `TRAFFIC_SPIKE`; `tshark` deep capture (SNI/HTTP Host/DHCP); `lldpctl` neighbor poll; passive `netdiscover` ARP; dedicated Linux package/env defaults.
 - **LAN HTTPS via Caddy** — optional systemd Caddy on the dedicated box (`deploy/linux/Caddyfile`): `https://netscanner.local` / `https://192.168.40.110` with internal CA (auto-renewed leaf certs); NetScanner HTTP on `:80`/`:4000` unchanged; CA at `/netscanner-ca.crt`.
+- **Tuya cloud identity (read-only)** — optional `TUYA_ACCESS_ID` / `TUYA_ACCESS_SECRET` / `TUYA_DATA_CENTER` syncs the Smart Life–linked device list (default hourly) and enriches inventory by MAC (via factory-infos) with name/product/category; catalog persists in SQLite across restarts; never sends control commands.
 
 ### Changed
 - **Compal background poll** — idle when all APs are online (including permanent `mesh unknown`); fast poll only in post-action watch windows; slow ~90s recovery check when offline; silent polls no longer flash the Refresh button.

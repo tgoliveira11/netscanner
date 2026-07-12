@@ -68,32 +68,42 @@ export class PrismaDeviceRepository implements IDeviceRepository {
     return rows.map((r) => DeviceMapper.toDomain(r as DeviceRow));
   }
 
+  /**
+   * Devices usable for router/AP HTTP scrape:
+   * - rows with saved panel credentials, and
+   * - Compal/CBN-like APs (credentials may come from env, bound by MAC/hostname).
+   */
   async listRouterScrapeCredentials(siteId: string): Promise<RouterScrapeCredential[]> {
     const rows = await this.prisma.deviceRecord.findMany({
       where: {
         siteId,
-        routerScrapeUser: { not: null },
-        routerScrapePassword: { not: null },
+        OR: [
+          { AND: [{ routerScrapeUser: { not: null } }, { routerScrapePassword: { not: null } }] },
+          { brand: { contains: 'Compal' } },
+          { hostname: { startsWith: 'CBN_' } },
+        ],
       },
       select: {
         ip: true,
+        mac: true,
         deviceType: true,
         brand: true,
         hostname: true,
+        isOnline: true,
         routerScrapeUser: true,
         routerScrapePassword: true,
       },
     });
-    return rows
-      .filter((r) => r.routerScrapeUser && r.routerScrapePassword)
-      .map((r) => ({
-        ip: r.ip,
-        deviceType: r.deviceType,
-        brand: r.brand,
-        hostname: r.hostname,
-        routerScrapeUser: r.routerScrapeUser!,
-        routerScrapePassword: r.routerScrapePassword!,
-      }));
+    return rows.map((r) => ({
+      ip: r.ip,
+      mac: r.mac,
+      deviceType: r.deviceType,
+      brand: r.brand,
+      hostname: r.hostname,
+      isOnline: r.isOnline,
+      routerScrapeUser: r.routerScrapeUser,
+      routerScrapePassword: r.routerScrapePassword,
+    }));
   }
 
   async markOfflineExcept(onlineIds: string[], siteId: string): Promise<string[]> {

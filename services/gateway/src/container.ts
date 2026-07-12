@@ -31,6 +31,7 @@ import {
   RemoteDhcpSniffer,
   CompositeDhcpFingerprintSource,
   FingerbankClient,
+  TuyaCloudIdentityClient,
   PassiveListeners,
   InMemoryPassiveSignalStore,
   HttpRouterScrapeAdapter,
@@ -44,6 +45,8 @@ import {
   type IDhcpFingerprintSource,
   type IDeviceFingerprintResolver,
   type IPassiveSignalStore,
+  type ICloudDeviceIdentitySource,
+  type ICloudDeviceIdentityCatalogStore,
   type RemoteDnsPassiveListenerOptions,
 } from '@netscanner/discovery';
 import {
@@ -110,6 +113,8 @@ import {
   PrismaCpeAccessSessionStore,
   InMemoryCpeAccessSessionStore,
   type ICpeAccessSessionStore,
+  PrismaCloudDeviceIdentityStore,
+  InMemoryCloudDeviceIdentityStore,
 } from '@netscanner/inventory';
 import { LEGACY_DEFAULT_SITE_ID } from '@netscanner/contracts';
 import type { IConnectionSource } from '@netscanner/contracts';
@@ -483,6 +488,29 @@ async function buildPassiveSignalStore(
   }
 }
 
+async function buildCloudDeviceIdentityStore(
+  config: AppConfig,
+  logger: Logger,
+): Promise<ICloudDeviceIdentityCatalogStore> {
+  if (process.env.PERSISTENCE === 'memory') return new InMemoryCloudDeviceIdentityStore();
+  try {
+    const prismaSpecifier = '@prisma/client';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prismaMod: any = await import(prismaSpecifier);
+    const url = resolveSqliteUrl(config.DATABASE_URL);
+    const prisma = new prismaMod.PrismaClient({ datasources: { db: { url } } });
+    await prisma.$connect();
+    logger.info('using Prisma Tuya identity catalog persistence');
+    return new PrismaCloudDeviceIdentityStore(prisma);
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      'Tuya identity catalog Prisma unavailable; using in-memory store',
+    );
+    return new InMemoryCloudDeviceIdentityStore();
+  }
+}
+
 /**
  * Composition root: the single place where interfaces are bound to concrete
  * implementations. Nothing else in the codebase constructs infrastructure,
@@ -659,9 +687,11 @@ export async function buildContainer(): Promise<Container> {
         activeSite.effectiveConfig(),
         creds.map((c) => ({
           ip: c.ip,
+          mac: c.mac,
           deviceType: c.deviceType,
           brand: c.brand,
           hostname: c.hostname,
+          isOnline: c.isOnline,
           routerScrapeUser: c.routerScrapeUser,
           routerScrapePassword: c.routerScrapePassword,
         })),
@@ -697,6 +727,23 @@ export async function buildContainer(): Promise<Container> {
   if (config.FINGERBANK_API_KEY) {
     fingerbank = new FingerbankClient(config.FINGERBANK_API_KEY, logger);
     logger.info('Fingerbank device identification enabled');
+  }
+
+  let tuyaIdentity: ICloudDeviceIdentitySource | undefined;
+  if (config.TUYA_ACCESS_ID?.trim() && config.TUYA_ACCESS_SECRET?.trim()) {
+    const tuyaStore = await buildCloudDeviceIdentityStore(config, logger);
+    const client = new TuyaCloudIdentityClient(
+      {
+        accessId: config.TUYA_ACCESS_ID.trim(),
+        accessSecret: config.TUYA_ACCESS_SECRET.trim(),
+        dataCenter: config.TUYA_DATA_CENTER,
+        store: tuyaStore,
+      },
+      logger,
+    );
+    await client.hydrate();
+    tuyaIdentity = client;
+    logger.info({ dataCenter: config.TUYA_DATA_CENTER }, 'Tuya cloud identity (read-only) enabled');
   }
 
   let dhcpSource: IDhcpFingerprintSource | undefined;
@@ -813,6 +860,7 @@ export async function buildContainer(): Promise<Container> {
     repo,
     dhcpSource,
     fingerbank,
+    tuyaIdentity,
     passiveStore,
     snmp,
     connectionSource,
@@ -893,6 +941,7 @@ export async function buildContainer(): Promise<Container> {
     trafficMonitor,
     dnsActivityLog,
     cveRefresh,
+    tuyaIdentity,
     getSiteId,
     needsSiteConfirmation: () => activeSite.needsConfirmation(),
     refreshSite: async () => {

@@ -131,7 +131,7 @@ export function CompalPanel() {
       <section className="space-y-2">
         <h2 className="text-sm font-semibold text-slate-200">Compal APs</h2>
         <p className="text-xs text-muted">
-          Add Compal targets to ROUTER_SCRAPE_TARGETS (kind=compal) to manage mesh and reboot from here.
+          Add Compal credentials as `compal|CLARO_xxxxxx|password` in ROUTER_SCRAPE_TARGETS (IPs come from discovery).
         </p>
       </section>
     );

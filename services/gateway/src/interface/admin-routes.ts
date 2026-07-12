@@ -99,9 +99,11 @@ export async function registerAdminRoutes(app: FastifyInstance, c: Container): P
       c.config,
       creds.map((row) => ({
         ip: row.ip,
+        mac: row.mac,
         deviceType: row.deviceType,
         brand: row.brand,
         hostname: row.hostname,
+        isOnline: row.isOnline,
         routerScrapeUser: row.routerScrapeUser,
         routerScrapePassword: row.routerScrapePassword,
       })),
@@ -333,9 +335,11 @@ async function listCompalTargets(c: Container): Promise<OpenWrtScrapeTarget[]> {
     c.config,
     creds.map((row) => ({
       ip: row.ip,
+      mac: row.mac,
       deviceType: row.deviceType,
       brand: row.brand,
       hostname: row.hostname,
+      isOnline: row.isOnline,
       routerScrapeUser: row.routerScrapeUser,
       routerScrapePassword: row.routerScrapePassword,
     })),

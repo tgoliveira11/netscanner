@@ -42,6 +42,16 @@ export function resolveBrandModel(
     const fromPath = modelFromHardwarePath(fbPath);
     if (fromPath) model = fromPath;
   }
+
+  const tuyaProduct = readSignal(signals, 'tuyaProductName');
+  const tuyaName = readSignal(signals, 'tuyaName');
+  if (tuyaProduct || tuyaName) {
+    if (!brand) brand = 'Tuya';
+    if (!model || isGenericHardwareModel(model) || /^tuya|iot|esp/i.test(model)) {
+      model = tuyaProduct || tuyaName;
+    }
+  }
+
   if (!brand && upnpMfr) brand = normalizeBrandName(upnpMfr);
   const snmpVendor = readSignal(signals, 'snmpOidVendor');
   if (!brand && snmpVendor) brand = snmpVendor;

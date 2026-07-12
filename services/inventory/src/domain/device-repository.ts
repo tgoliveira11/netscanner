@@ -3,11 +3,14 @@ import type { StoredDevice } from './device-public.js';
 
 export interface RouterScrapeCredential {
   ip: string;
+  mac: string | null;
   deviceType: string;
   brand: string | null;
   hostname: string | null;
-  routerScrapeUser: string;
-  routerScrapePassword: string;
+  isOnline?: boolean;
+  /** Present when the operator saved panel credentials on the device. */
+  routerScrapeUser: string | null;
+  routerScrapePassword: string | null;
 }
 
 export interface DeviceFilter {

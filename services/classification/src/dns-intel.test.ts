@@ -40,8 +40,29 @@ describe('analyzeDns', () => {
 
   it('raises an info flag for IoT devices contacting many endpoints', () => {
     const domains = ['x.tuyaus.com', ...Array.from({ length: 9 }, (_, i) => `h${i}.example${i}.com`)];
-    const flags = dnsSecurityFlags(analyzeDns(domains));
+    const flags = dnsSecurityFlags(analyzeDns(domains), 'iot');
     expect(flags.some((f) => f.code === 'iot-phone-home')).toBe(true);
+  });
+
+  it('does not raise iot-phone-home for phones/computers that hit Tuya (controller apps)', () => {
+    const domains = ['a1.tuya.com', ...Array.from({ length: 9 }, (_, i) => `h${i}.example${i}.com`)];
+    const profile = analyzeDns(domains);
+    expect(dnsSecurityFlags(profile, 'phone').some((f) => f.code === 'iot-phone-home')).toBe(false);
+    expect(dnsSecurityFlags(profile, 'computer').some((f) => f.code === 'iot-phone-home')).toBe(false);
+    expect(dnsSecurityFlags(profile).some((f) => f.code === 'iot-phone-home')).toBe(false);
+  });
+
+  it('does not treat facebook.com as ads-tracker (normal app use)', () => {
+    const profile = analyzeDns(['graph.facebook.com', 'scontent.xx.fbcdn.net', 'www.instagram.com']);
+    expect(profile.categories).toContain('social');
+    expect(profile.categories).not.toContain('ads-tracker');
+    expect(dnsSecurityFlags(profile).some((f) => f.code === 'dns-trackers')).toBe(false);
+  });
+
+  it('still flags real ad-network / pixel domains', () => {
+    const profile = analyzeDns(['pagead2.googlesyndication.com', 'connect.facebook.net']);
+    expect(profile.categories).toContain('ads-tracker');
+    expect(dnsSecurityFlags(profile).some((f) => f.code === 'dns-trackers')).toBe(true);
   });
 });
 

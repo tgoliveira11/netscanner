@@ -39,13 +39,11 @@ export class CompositeTrafficSource implements ITrafficSource {
 
   async sample(): Promise<TrafficSample[]> {
     const byIp = new Map<string, TrafficSample>();
-    for (const source of this.sources) {
-      try {
-        const rows = await source.sample();
-        for (const row of rows) mergeSamples(byIp, row);
-      } catch {
-        // skip unreachable adapters
-      }
+    // Parallel + isolated failures so one slow pfSense path cannot block the other.
+    const results = await Promise.allSettled(this.sources.map((s) => s.sample()));
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue;
+      for (const row of result.value) mergeSamples(byIp, row);
     }
     return [...byIp.values()];
   }

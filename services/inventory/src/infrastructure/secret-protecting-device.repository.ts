@@ -50,7 +50,9 @@ export class SecretProtectingDeviceRepository implements IDeviceRepository {
     const rows = await this.inner.listRouterScrapeCredentials(siteId);
     return rows.map((row) => ({
       ...row,
-      routerScrapePassword: this.decryptField(row.routerScrapePassword),
+      routerScrapePassword: row.routerScrapePassword
+        ? this.decryptField(row.routerScrapePassword)
+        : null,
     }));
   }
 

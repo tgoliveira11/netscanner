@@ -86,12 +86,16 @@ External systems that feed inventory, traffic, or DHCP data.
 | `PFSENSE_SSH_PORT` | number | yes | SSH port (default 22; some labs use e.g. 2231). |
 | `PFSENSE_SSH_PASSWORD` | secret | yes | SSH password for pfSense remote capture. |
 | `FINGERBANK_API_KEY` | secret | yes | Fingerbank API for DHCP fingerprint → device class hints. |
+| `TUYA_ACCESS_ID` | string | yes | Tuya IoT Platform Access ID (Client ID). Read-only identity: names/categories for devices linked from Smart Life. |
+| `TUYA_ACCESS_SECRET` | secret | yes | Tuya Access Secret. Never used to send commands to devices. |
+| `TUYA_DATA_CENTER` | string | yes | Cloud region matching the Smart Life app (`us`, `us-e`, `eu`, `eu-w`, `cn`, `in`, `sg`). Wrong region → empty device list. |
+| `TUYA_SYNC_INTERVAL_MS` | number | no | Refresh Tuya device list from the cloud (default `3600000` = 1h). Catalog is also stored in SQLite so restarts reuse the last sync until the next refresh. |
 | `ROUTER_SNMP_HOST` | string | yes | Gateway SNMP when not using pfSense for ARP/MAC tables. |
 | `ROUTER_SCRAPE_URL` | string | yes | Single router panel URL (legacy; prefer `ROUTER_SCRAPE_TARGETS`). |
 | `ROUTER_SCRAPE_KIND` | string | yes | `openwrt` (LuCI) or `compal` (Claro AP ARP table). |
 | `ROUTER_SCRAPE_USER` | string | yes | HTTP login for router panel. |
 | `ROUTER_SCRAPE_PASSWORD` | secret | yes | HTTP password for router panel. |
-| `ROUTER_SCRAPE_TARGETS` | multiline | yes | One router per line: `url\|kind\|user\|password`. Example: `http://192.168.40.2\|openwrt\|root\|pass` and `http://192.168.51.101\|compal\|CLARO_21A469\|pass`. Used for WiFi SSID probe, Compal/OpenWrt enrichment, and DHCP sniff SSH fallback. |
+| `ROUTER_SCRAPE_TARGETS` | multiline | yes | OpenWrt: `url\|openwrt\|user\|password`. Compal: `compal\|CLARO_xxxxxx\|password` (management IP from discovery/MAC — do not pin Compal IPs). Used for WiFi SSID probe, Compal/OpenWrt enrichment, and DHCP sniff SSH fallback. |
 | `FRITZBOX_URL` | string | yes | Fritz!Box base URL for host list integration. |
 | `FRITZBOX_USER` | string | yes | Fritz!Box username. |
 | `FRITZBOX_PASSWORD` | secret | yes | Fritz!Box password. |
@@ -102,6 +106,8 @@ External systems that feed inventory, traffic, or DHCP data.
 | `OMADA_CLIENT_ID` | string | yes | Omada Open API client ID. |
 | `OMADA_CLIENT_SECRET` | secret | yes | Omada Open API client secret. |
 | `OMADA_SITE_ID` | string | yes | Omada site identifier. |
+
+**Tuya setup:** create a **Smart Home** cloud project on [platform.tuya.com](https://platform.tuya.com/), authorize IoT Core (free trial), then **Devices → Link Tuya App Account** and scan the QR with Smart Life. NetScanner only lists devices and matches them by MAC/IP — it never sends control commands.
 
 ### Topology
 

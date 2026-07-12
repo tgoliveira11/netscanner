@@ -14,6 +14,8 @@ export * from './infrastructure/composite-lease-source.js';
 export * from './infrastructure/dhcp-sniffer.js';
 export * from './infrastructure/remote-dhcp-sniffer.js';
 export * from './infrastructure/composite-dhcp-fingerprint-source.js';
+export * from './domain/cloud-device-identity.js';
+export * from './infrastructure/tuya-cloud-identity.js';
 export * from './infrastructure/fingerbank-client.js';
 export * from './application/discover-hosts.use-case.js';
 export * from './infrastructure/concurrency.js';

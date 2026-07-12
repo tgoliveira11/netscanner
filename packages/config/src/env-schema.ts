@@ -57,7 +57,11 @@ export const EnvSchema = z.object({
   TSHARK_DEEP_ENABLED: envBool(true),
   /** Prefer lldpctl neighbors when lldpd is installed. */
   LLDPD_ENABLED: envBool(true),
-  /** Continuous passive ARP via netdiscover (elevated, Linux). */
+  /**
+   * Continuous passive ARP via tcpdump (elevated, Linux).
+   * Flag name kept for compatibility; interactive `netdiscover -p` is never used
+   * (it floods stdout and can starve the gateway event loop).
+   */
   NETDISCOVER_ENABLED: envBool(true),
   /** Expand local CVE index from NVD 2.0 subset (offline seed always used). */
   CVE_NVD_SYNC: envBool(false),
@@ -106,11 +110,23 @@ export const EnvSchema = z.object({
   OMADA_CLIENT_ID: z.string().optional(),
   OMADA_CLIENT_SECRET: z.string().optional(),
   OMADA_SITE_ID: z.string().optional(),
+  /** Tuya IoT Platform Access ID (Client ID) — read-only device identity. */
+  TUYA_ACCESS_ID: z.string().optional(),
+  /** Tuya IoT Platform Access Secret — never used for device control. */
+  TUYA_ACCESS_SECRET: z.string().optional(),
+  /**
+   * Tuya cloud data center matching the Smart Life app region.
+   * us=Western America, us-e=Eastern America, eu=Central Europe, eu-w=Western Europe.
+   */
+  TUYA_DATA_CENTER: z.enum(['us', 'us-e', 'eu', 'eu-w', 'cn', 'in', 'sg']).default('us'),
+  /** How often to refresh the Tuya device list (default 1h). */
+  TUYA_SYNC_INTERVAL_MS: z.coerce.number().default(3_600_000),
   ROUTER_SCRAPE_URL: z.string().optional(),
   ROUTER_SCRAPE_KIND: z.enum(['openwrt', 'compal']).optional(),
   ROUTER_SCRAPE_USER: z.string().optional(),
   ROUTER_SCRAPE_PASSWORD: z.string().optional(),
   /** Semicolon-separated scrape targets: url|kind|user|password (password may contain |). */
+  /** OpenWrt: `http://ip|openwrt|user|pass`. Compal: `compal|CLARO_xxx|pass` (IP from discovery). */
   ROUTER_SCRAPE_TARGETS: z.string().optional(),
   /**
    * Topology layout: `simple` = pfSense → switch → clients (generic).

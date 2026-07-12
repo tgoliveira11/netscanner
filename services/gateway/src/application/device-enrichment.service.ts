@@ -3,6 +3,7 @@ import type {
   IDhcpFingerprintSource,
   IDeviceFingerprintResolver,
   IPassiveSignalStore,
+  ICloudDeviceIdentitySource,
 } from '@netscanner/discovery';
 import { mergePassiveSignals, buildFingerbankQuery } from '@netscanner/discovery';
 import type { IConnectionSource } from '@netscanner/contracts';
@@ -32,6 +33,8 @@ export interface DeviceEnrichmentDeps {
   repo: IDeviceRepository;
   dhcpSource?: IDhcpFingerprintSource;
   fingerbank?: IDeviceFingerprintResolver;
+  /** Read-only Tuya / Smart Life identity catalog (MAC/IP → name/product). */
+  tuyaIdentity?: ICloudDeviceIdentitySource;
   passiveStore?: IPassiveSignalStore;
   snmp?: SnmpEnricher;
   connectionSource?: IConnectionSource;
@@ -131,7 +134,13 @@ export class DeviceEnrichmentService {
     const fb = await this.resolveFingerbank(input.mac, hostname, mergedSignals);
     if (fb) mergedSignals = { ...mergedSignals, ...fb };
 
+    const tuya = this.resolveTuyaIdentity(input.mac, input.ip);
+    if (tuya) mergedSignals = { ...mergedSignals, ...tuya };
+
     mergedSignals = applyConnectionSignals(input.mac, mergedSignals, this.deps.connectionSource);
+
+    const hostnameFinal =
+      preferHostname(hostname, readStr(mergedSignals, 'tuyaName')) ?? hostname;
 
     // #1 DNS intelligence: analyze passively-observed query names + TLS SNI / HTTP Host
     // BEFORE classification so the DnsClassificationRule can vote on it.
@@ -157,7 +166,7 @@ export class DeviceEnrichmentService {
     const classification = this.deps.classify.execute({
       ip: input.ip,
       mac: input.mac,
-      hostname,
+      hostname: hostnameFinal,
       os: nmapOs,
       services: input.services,
       vendorFromScan: input.vendorFromScan ?? null,
@@ -173,6 +182,7 @@ export class DeviceEnrichmentService {
         model: classification.model,
         os: classification.os,
         services: input.services,
+        signals: mergedSignals,
       }),
     );
     const dnsProfile = mergedSignals['dnsProfile'];
@@ -190,7 +200,9 @@ export class DeviceEnrichmentService {
 
     const securityFlags = [
       ...classification.securityFlags,
-      ...(dnsProfile ? dnsSecurityFlags(dnsProfile as never) : []),
+      ...(dnsProfile
+        ? dnsSecurityFlags(dnsProfile as never, classification.deviceType)
+        : []),
       ...cvesToSecurityFlags(cves),
       ...trafficFlags,
     ];
@@ -202,7 +214,7 @@ export class DeviceEnrichmentService {
       vendor: classification.vendor,
       brand: classification.brand,
       model: classification.model,
-      hostname,
+      hostname: hostnameFinal,
       deviceType: classification.deviceType as DeviceSnapshot['deviceType'],
       confidence: classification.confidence,
       os: classification.os,
@@ -349,9 +361,36 @@ export class DeviceEnrichmentService {
       JSON.stringify(device.signals['httpHostRecent'] ?? []) !== JSON.stringify(incomingHttp ?? [])
     );
   }
+
+  private resolveTuyaIdentity(
+    mac: string | null,
+    ip: string,
+  ): Record<string, unknown> | null {
+    const src = this.deps.tuyaIdentity;
+    if (!src) return null;
+    const hit = (mac ? src.lookupByMac(mac) : null) ?? src.lookupByIp(ip);
+    if (!hit) return null;
+    return {
+      tuyaName: hit.name,
+      tuyaProductName: hit.productName,
+      tuyaCategory: hit.category,
+      tuyaDeviceId: hit.deviceId,
+      tuyaOnline: hit.online,
+    };
+  }
 }
 
 function readStr(signals: Record<string, unknown>, key: string): string | null {
   const v = signals[key];
   return typeof v === 'string' && v ? v : null;
+}
+
+/** Prefer a human Tuya name when the current hostname looks generic / empty. */
+function preferHostname(current: string | null, tuyaName: string | null): string | null {
+  if (!tuyaName) return current;
+  if (!current) return tuyaName;
+  if (/^(android|esp|espressif|tuya|lwip|wlan\d*|unknown)/i.test(current)) return tuyaName;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(current)) return tuyaName;
+  if (/^[0-9a-f-]{8,}$/i.test(current)) return tuyaName;
+  return current;
 }

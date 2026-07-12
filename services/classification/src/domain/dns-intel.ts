@@ -52,8 +52,11 @@ export const DOMAIN_CATALOG: CatalogEntry[] = [
   { match: /(^|\.)(playstation|sony|nintendo|xboxlive|steam|steampowered|epicgames)\.(com|net)$/i, category: 'gaming' },
   // Printers
   { match: /(^|\.)(hp|epson|canon|brother|lexmark)\.(com|net)$/i, category: 'printer' },
-  // Ads / trackers
-  { match: /(^|\.)(doubleclick|googlesyndication|google-analytics|scorecardresearch|adnxs|criteo|adsystem|facebook|fbcdn|tiktokv)\.(com|net)$/i, category: 'ads-tracker' },
+  // Ads / trackers (ad networks / pixels — checked before social app frontends)
+  { match: /(^|\.)connect\.facebook\.(com|net)$/i, category: 'ads-tracker' },
+  { match: /(^|\.)(doubleclick|googlesyndication|google-analytics|scorecardresearch|adnxs|criteo|adsystem|tiktokv)\.(com|net)$/i, category: 'ads-tracker' },
+  // Social apps (primary destinations — not ad-network trackers)
+  { match: /(^|\.)(facebook|fbcdn|instagram|whatsapp)\.(com|net)$/i, vendor: 'Meta', category: 'social' },
   // Infra
   { match: /(^|\.)(pool\.ntp\.org|time\.(apple|google|windows|nist)\.(com|gov))$/i, category: 'ntp' },
   { match: /(^|\.)(windowsupdate|update\.microsoft|swscan\.apple|swcdn\.apple)\.com$/i, category: 'update' },
@@ -104,8 +107,19 @@ export function dnsVendorHints(profile: DnsProfile): string[] {
   return [...new Set(profile.topDomains.map((d) => d.vendor).filter((v): v is string => !!v))];
 }
 
+/** Device types for which vendor-cloud phone-home volume is a useful signal. */
+const IOT_PHONE_HOME_TYPES = new Set([
+  'camera',
+  'smart-speaker',
+  'smart-home',
+  'iot',
+]);
+
 /** Security findings from DNS behaviour (privacy / phone-home). */
-export function dnsSecurityFlags(profile: DnsProfile): SecurityFlag[] {
+export function dnsSecurityFlags(
+  profile: DnsProfile,
+  deviceType?: string | null,
+): SecurityFlag[] {
   const flags: SecurityFlag[] = [];
   if (profile.categories.includes('ads-tracker')) {
     flags.push({
@@ -114,8 +128,15 @@ export function dnsSecurityFlags(profile: DnsProfile): SecurityFlag[] {
       message: 'Device contacts advertising/tracking domains.',
     });
   }
+  // Controllers (phones/Macs with Smart Life etc.) also hit iot-cloud domains —
+  // only flag actual IoT endpoints, not the app that manages them.
   const iotCloud = profile.categories.some((c) => c === 'iot-cloud' || c === 'security-cam');
-  if (iotCloud && profile.externalEndpoints >= 5) {
+  if (
+    iotCloud &&
+    profile.externalEndpoints >= 5 &&
+    deviceType != null &&
+    IOT_PHONE_HOME_TYPES.has(deviceType)
+  ) {
     flags.push({
       code: 'iot-phone-home',
       severity: 'info',

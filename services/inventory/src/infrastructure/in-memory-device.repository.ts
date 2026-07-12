@@ -51,17 +51,22 @@ export class InMemoryDeviceRepository implements IDeviceRepository {
 
   async listRouterScrapeCredentials(siteId: string): Promise<RouterScrapeCredential[]> {
     return [...this.devices.values()]
-      .filter(
-        (d) =>
-          d.siteId === siteId && d.routerScrapeUser && d.routerScrapePassword,
-      )
+      .filter((d) => {
+        if (d.siteId !== siteId) return false;
+        if (d.routerScrapeUser && d.routerScrapePassword) return true;
+        const brand = (d.brand ?? '').toLowerCase();
+        const host = (d.hostname ?? '').toUpperCase();
+        return brand.includes('compal') || host.startsWith('CBN_');
+      })
       .map((d) => ({
         ip: d.ip,
+        mac: d.mac,
         deviceType: d.deviceType,
         brand: d.brand ?? null,
         hostname: d.hostname ?? null,
-        routerScrapeUser: d.routerScrapeUser!,
-        routerScrapePassword: d.routerScrapePassword!,
+        isOnline: d.isOnline,
+        routerScrapeUser: d.routerScrapeUser ?? null,
+        routerScrapePassword: d.routerScrapePassword ?? null,
       }));
   }
 

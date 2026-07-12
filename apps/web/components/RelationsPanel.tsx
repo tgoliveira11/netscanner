@@ -83,6 +83,14 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
     [devices],
   );
 
+  const macFor = useCallback(
+    (id: string) => {
+      const d = devices[id];
+      return d?.mac ?? (id.includes(':') ? id : null);
+    },
+    [devices],
+  );
+
   const destFor = useCallback(
     (e: TrafficEdge) => {
       if (e.kind === 'traffic-external') return String(e.to);
@@ -127,24 +135,25 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
     return traffic.filter((e) => {
       if (scope === 'wan' && e.kind !== 'traffic-external') return false;
       if (scope === 'lan' && e.kind !== 'traffic') return false;
-      return matches(labelFor(e.from), destFor(e));
+      const destMac = e.kind === 'traffic-external' ? null : macFor(String(e.to));
+      return matches(labelFor(e.from), macFor(e.from) ?? undefined, destFor(e), destMac ?? undefined);
     });
-  }, [traffic, scope, q, labelFor, destFor]);
+  }, [traffic, scope, q, labelFor, destFor, macFor]);
 
   const filteredDns = useMemo(
     () =>
       dnsRows.filter((r) =>
-        matches(labelFor(r.deviceId), r.domain, r.vendor),
+        matches(labelFor(r.deviceId), macFor(r.deviceId) ?? undefined, r.domain, r.vendor),
       ),
-    [dnsRows, q, labelFor],
+    [dnsRows, q, labelFor, macFor],
   );
 
   const filteredLog = useMemo(
     () =>
       dnsLog.filter((r) =>
-        matches(r.deviceLabel, r.message, labelFor(r.deviceId)),
+        matches(r.deviceLabel, r.message, labelFor(r.deviceId), macFor(r.deviceId) ?? undefined),
       ),
-    [dnsLog, q, labelFor],
+    [dnsLog, q, labelFor, macFor],
   );
 
   const stats = useMemo(() => {
@@ -258,22 +267,30 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
             <tbody>
               {filteredTraffic.map((e, i) => {
                 const badge = scopeBadge(e.kind);
+                const fromMac = macFor(e.from);
+                const toMac = e.kind === 'traffic-external' ? null : macFor(String(e.to));
                 return (
                   <tr
                     key={`${e.from}-${e.to}-${i}`}
                     className="border-b border-edge/50 hover:bg-panelup/60"
                   >
-                    <td className="max-w-[180px] truncate px-4 py-2">
+                    <td className="max-w-[200px] px-4 py-2">
                       <button
                         type="button"
-                        className="text-left text-slate-200 hover:text-accent"
+                        className="max-w-full text-left text-slate-200 hover:text-accent"
                         onClick={() => select(e.from)}
                       >
-                        {labelFor(e.from)}
+                        <div className="truncate">{labelFor(e.from)}</div>
+                        {fromMac && (
+                          <div className="truncate font-mono text-[10px] text-muted">{fromMac}</div>
+                        )}
                       </button>
                     </td>
-                    <td className="max-w-[240px] truncate px-4 py-2 font-mono text-slate-300" title={destFor(e)}>
-                      {destFor(e)}
+                    <td className="max-w-[240px] px-4 py-2 text-slate-300" title={destFor(e)}>
+                      <div className="truncate font-mono">{destFor(e)}</div>
+                      {toMac && (
+                        <div className="truncate font-mono text-[10px] text-muted">{toMac}</div>
+                      )}
                     </td>
                     <td className="hidden px-4 py-2 sm:table-cell">
                       <span className={`badge ${badge.className}`}>{badge.label}</span>
@@ -298,18 +315,23 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {filteredDns.map((row) => (
+              {filteredDns.map((row) => {
+                const mac = macFor(row.deviceId);
+                return (
                 <tr
                   key={`${row.deviceId}-${row.domain}`}
                   className="border-b border-edge/50 hover:bg-panelup/60"
                 >
-                  <td className="max-w-[160px] truncate px-4 py-2">
+                  <td className="max-w-[180px] px-4 py-2">
                     <button
                       type="button"
-                      className="text-left text-slate-200 hover:text-accent"
+                      className="max-w-full text-left text-slate-200 hover:text-accent"
                       onClick={() => select(row.deviceId)}
                     >
-                      {labelFor(row.deviceId)}
+                      <div className="truncate">{labelFor(row.deviceId)}</div>
+                      {mac && (
+                        <div className="truncate font-mono text-[10px] text-muted">{mac}</div>
+                      )}
                     </button>
                   </td>
                   <td className="max-w-[320px] truncate px-4 py-2 font-mono text-slate-300" title={row.domain}>
@@ -319,7 +341,8 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
                     {row.vendor ?? '—'}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -334,7 +357,9 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {[...filteredLog].reverse().map((row, i) => (
+              {[...filteredLog].reverse().map((row, i) => {
+                const mac = macFor(row.deviceId);
+                return (
                 <tr
                   key={`${row.at}-${row.deviceId}-${i}`}
                   className="border-b border-edge/50 hover:bg-panelup/60"
@@ -348,18 +373,22 @@ export function RelationsPanel({ fullPage = false }: { fullPage?: boolean }) {
                       second: '2-digit',
                     })}
                   </td>
-                  <td className="max-w-[140px] truncate px-4 py-2">
+                  <td className="max-w-[180px] px-4 py-2">
                     <button
                       type="button"
-                      className="text-left text-slate-200 hover:text-accent"
+                      className="max-w-full text-left text-slate-200 hover:text-accent"
                       onClick={() => select(row.deviceId)}
                     >
-                      {row.deviceLabel}
+                      <div className="truncate">{row.deviceLabel}</div>
+                      {mac && (
+                        <div className="truncate font-mono text-[10px] text-muted">{mac}</div>
+                      )}
                     </button>
                   </td>
                   <td className="px-4 py-2 text-slate-300">{row.message}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}

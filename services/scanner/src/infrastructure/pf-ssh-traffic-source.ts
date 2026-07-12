@@ -99,13 +99,21 @@ export class PfSshTrafficSource implements ITrafficSource {
         } catch {
           /* ignore */
         }
+        setTimeout(() => {
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            /* ignore */
+          }
+        }, 1_500);
         this.logger.warn({ host: this.host }, 'pf traffic SSH timed out');
         resolve(null);
       }, this.timeoutMs);
 
       proc.stdout?.setEncoding('utf8');
+      const maxBytes = 8 * 1024 * 1024;
       proc.stdout?.on('data', (chunk: string) => {
-        stdout += chunk;
+        if (stdout.length < maxBytes) stdout += chunk;
       });
       proc.stderr?.on('data', (chunk: Buffer) => {
         stderr += chunk.toString('utf8');
