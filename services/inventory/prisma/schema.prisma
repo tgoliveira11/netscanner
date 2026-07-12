@@ -168,6 +168,24 @@ model DevicePolicyRecord {
 }
 
 /**
+ * Tuya / Smart Life cloud identity catalog (read-only).
+ * Survives restarts so enrichment works before the next API sync.
+ */
+model CloudDeviceIdentityRecord {
+  deviceId    String   @id
+  name        String
+  productName String?
+  category    String?
+  mac         String?
+  ip          String?
+  online      Boolean?
+  updatedAt   DateTime @updatedAt
+
+  @@index([mac])
+  @@index([ip])
+}
+
+/**
  * Persisted CPE / modem reverse-proxy sessions.
  * Survives agent restart; closed only via Admin "Close tunnel".
  * Password stored encrypted (SecretCipher) when available.

@@ -14,29 +14,38 @@ export class DynamicRouterScrapeLeaseSource implements IRouterLeaseSource {
   async getLeases(): Promise<RouterLease[]> {
     const targets = await this.loadTargets();
     const byKey = new Map<string, RouterLease>();
-    for (const target of targets) {
-      const adapter = new HttpRouterScrapeAdapter(
-        {
-          baseUrl: target.baseUrl,
-          kind: target.kind,
-          username: target.username,
-          password: target.password,
-          insecureTls: true,
-        },
-        this.logger,
-      );
-      try {
-        for (const lease of await adapter.getLeases()) {
-          const key = (lease.mac ?? lease.ip).toLowerCase();
-          if (key) byKey.set(key, lease);
-        }
-      } catch (error) {
-        this.logger.warn(
-          { url: target.baseUrl, error: error instanceof Error ? error.message : error },
-          'router lease source failed (continuing)',
+    const perTargetMs = 5_000;
+    await Promise.allSettled(
+      targets.map(async (target) => {
+        const adapter = new HttpRouterScrapeAdapter(
+          {
+            baseUrl: target.baseUrl,
+            kind: target.kind,
+            username: target.username,
+            password: target.password,
+            insecureTls: true,
+          },
+          this.logger,
         );
-      }
-    }
+        try {
+          const rows = await Promise.race([
+            adapter.getLeases(),
+            new Promise<RouterLease[]>((_, reject) =>
+              setTimeout(() => reject(new Error(`scrape timed out after ${perTargetMs}ms`)), perTargetMs),
+            ),
+          ]);
+          for (const lease of rows) {
+            const key = (lease.mac ?? lease.ip).toLowerCase();
+            if (key) byKey.set(key, lease);
+          }
+        } catch (error) {
+          this.logger.warn(
+            { url: target.baseUrl, error: error instanceof Error ? error.message : error },
+            'router lease source failed (continuing)',
+          );
+        }
+      }),
+    );
     return [...byKey.values()];
   }
 }

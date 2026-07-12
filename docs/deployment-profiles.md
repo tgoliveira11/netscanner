@@ -92,18 +92,19 @@ TOPOLOGY_MODE=vlan
 TOPOLOGY_WIRED_VLAN=VLAN40
 TOPOLOGY_VLAN_ORDER=VLAN40,VLAN10,VLAN30,VLAN20
 
-# Standard OpenWrt LuCI DHCP scrape
+# Standard OpenWrt LuCI DHCP scrape (fixed URL OK for infra switches)
 ROUTER_SCRAPE_TARGETS=http://10.0.40.2|openwrt|root|password
 
-# Vendor-specific AP panels — opt-in via kind (not auto-detected)
-# ROUTER_SCRAPE_TARGETS=...;http://10.0.40.3|compal|ISP_112233|password
+# Compal/Claro APs — identity only (no IP). Bound at runtime to the discovered
+# device whose MAC/hostname matches CLARO_xxxxxx / CBN_RE_xxxxxx.
+# ROUTER_SCRAPE_TARGETS=...;compal|CLARO_112233|password
 ```
 
 **Topology (vlan):** ISP modem(s) → pfSense → wired infra switch + WiFi APs per VLAN segment → clients.
 
 ### Compal / Claro CPE (`kind:compal`)
 
-Compal LuCI (RSA login, `wireless_status` SSIDs) is **only** enabled when a scrape target explicitly uses `kind:compal` in `ROUTER_SCRAPE_TARGETS` or `ROUTER_SCRAPE_KIND=compal`. It is not inferred from hostname or vendor strings.
+Use `compal|CLARO_xxxxxx|password` in `ROUTER_SCRAPE_TARGETS` (or save credentials on the device). Management IPs come from inventory discovery (matched by MAC / `CBN_RE_*` hostname). Do not pin Compal IPs in config — DHCP/AP moves will break scrapes.
 
 ---
 

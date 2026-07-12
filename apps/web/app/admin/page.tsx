@@ -134,7 +134,7 @@ function ConfigField({
           value={draft}
           onChange={(e) => onChange(field.key, e.target.value)}
           spellCheck={false}
-          placeholder={'http://192.168.40.2|openwrt|root|password\nhttp://192.168.51.101|compal|CLARO_21A469|password'}
+          placeholder={'http://192.168.40.2|openwrt|root|password\ncompal|CLARO_21A469|password'}
           className="w-full rounded-lg border border-edge bg-base px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent"
         />
       </div>

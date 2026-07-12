@@ -89,11 +89,17 @@ export class RunScanUseCase {
     const gatewayIp = this.inferGateway(cidrs[0]!);
 
     const leases = await this.fetchLeases();
-    await this.refreshTraffic();
+    await Promise.race([
+      this.refreshTraffic(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
     const pfSenseSignals = this.pfSenseSignalExtras();
     if (this.deps.connectionSource) {
       try {
-        await this.deps.connectionSource.refresh();
+        await Promise.race([
+          this.deps.connectionSource.refresh(),
+          new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
+        ]);
       } catch (error) {
         this.deps.logger.warn(
           { error: error instanceof Error ? error.message : error },
@@ -277,7 +283,7 @@ export class RunScanUseCase {
    * Light scan for background use: ping + ARP discovery only (no nmap/TCP).
    * Walks every configured CIDR and marks offline once at the end.
    */
-  async executeLight(scanId: string, cidrs: Cidr | Cidr[]): Promise<void> {
+  async executeLight(scanId: string, cidrs: Cidr | Cidr[], signal?: AbortSignal): Promise<void> {
     const list = Array.isArray(cidrs) ? cidrs : [cidrs];
     const { sessions, events, logger } = this.deps;
     const siteId = this.deps.getSiteId();
@@ -314,7 +320,13 @@ export class RunScanUseCase {
       events.emit({ type: 'scan.started', payload: sessions.get(scanId)! });
 
       const leases = await this.fetchLeases();
-      await this.refreshTraffic();
+      // Never block discovery on pfSense state dumps (REST/SSH can hang for minutes
+      // on large tables and starve the light scan in `discovering`).
+      await Promise.race([
+        this.refreshTraffic(),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+      if (signal?.aborted) throw new Error('light scan aborted');
       const pfSenseSignals = this.pfSenseSignalExtras();
       const leaseByMac = new Map<string, RouterLease>();
       const leaseByIp = new Map<string, RouterLease>();
@@ -328,11 +340,13 @@ export class RunScanUseCase {
       let hostsTotal = 0;
 
       for (const cidr of list) {
+        if (signal?.aborted) throw new Error('light scan aborted');
         const gatewayIp = this.inferGateway(cidr);
         const hosts = await discover.execute({
           cidr,
           concurrency: this.deps.config.SCAN_CONCURRENCY,
           timeoutMs: this.deps.config.DISCOVERY_TIMEOUT_MS,
+          signal,
         });
 
         hostsTotal += hosts.length;
@@ -343,6 +357,7 @@ export class RunScanUseCase {
         });
 
         await mapPool(hosts, this.deps.config.SCAN_CONCURRENCY, async (host) => {
+          if (signal?.aborted) return;
           const existing =
             (host.mac ? await this.deps.repo.findByMac(siteId, host.mac) : null) ??
             (await this.deps.repo.findByIp(siteId, host.ip));
@@ -384,8 +399,10 @@ export class RunScanUseCase {
             devicesClassified: (sessions.get(scanId)?.devicesClassified ?? 0) + 1,
           });
           if (prog) events.emit({ type: 'scan.progress', payload: prog });
-        });
+        }, signal);
       }
+
+      if (signal?.aborted) throw new Error('light scan aborted');
 
       // Lease-only hosts (e.g. WAN CPE on ignored scan CIDRs) still need inventory + signals.
       const gatewayIp = this.inferGateway(list[0]!);
@@ -485,6 +502,8 @@ export class RunScanUseCase {
   private async fetchLeases(): Promise<RouterLease[]> {
     if (!this.deps.leaseSource) return [];
     try {
+      // CompositeLeaseSource bounds each adapter; do not replace with [] on a
+      // short race or we drop pfSense leases when a slow scrape hits the deadline.
       return await this.deps.leaseSource.getLeases();
     } catch (error) {
       this.deps.logger.warn(

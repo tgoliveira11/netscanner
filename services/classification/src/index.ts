@@ -12,6 +12,7 @@ export * from './domain/rules/app-banner.rule.js';
 export * from './domain/rules/fingerbank.rule.js';
 export * from './domain/rules/pfsense-identity.rule.js';
 export * from './domain/rules/dns.rule.js';
+export * from './domain/rules/tuya.rule.js';
 export * from './domain/rules/p0f.rule.js';
 export * from './domain/os-inference.js';
 export * from './domain/connection-inference.js';
@@ -37,6 +38,7 @@ import { AppBannerRule } from './domain/rules/app-banner.rule.js';
 import { FingerbankRule } from './domain/rules/fingerbank.rule.js';
 import { PfSenseIdentityRule } from './domain/rules/pfsense-identity.rule.js';
 import { DnsClassificationRule } from './domain/rules/dns.rule.js';
+import { TuyaClassificationRule } from './domain/rules/tuya.rule.js';
 import { P0fClassificationRule } from './domain/rules/p0f.rule.js';
 
 /** Default rule set wired into the engine; extend by appending new rules (OCP). */
@@ -52,6 +54,7 @@ export function defaultRules(): ClassificationRule[] {
     new AppBannerRule(),
     new FingerbankRule(),
     new P0fClassificationRule(),
+    new TuyaClassificationRule(),
     new DnsClassificationRule(),
   ];
 }

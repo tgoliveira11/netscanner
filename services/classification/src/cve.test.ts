@@ -26,6 +26,22 @@ describe('buildCpes', () => {
       ]),
     );
   });
+
+  it('maps pfSense version onto FreeBSD CPE so ranged FreeBSD CVEs are exact', () => {
+    const cpes = buildCpes({
+      brand: null,
+      model: null,
+      os: { name: 'FreeBSD (pfSense/OPNsense)', family: 'FreeBSD', accuracy: 70, source: 'inferred' },
+      services: [],
+      signals: { pfsenseVersion: '2.8.1-RELEASE' },
+    });
+    expect(cpes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ part: 'o', vendor: 'freebsd', product: 'freebsd', version: '15.0' }),
+        expect.objectContaining({ part: 'a', vendor: 'netgate', product: 'pfsense', version: '2.8.1' }),
+      ]),
+    );
+  });
 });
 
 describe('StaticCveResolver', () => {
@@ -46,6 +62,23 @@ describe('StaticCveResolver', () => {
   it('reports fuzzy when the version is unknown', () => {
     const found = resolver.match([{ part: 'a', vendor: 'nginx', product: 'nginx', version: null }]);
     expect(found.find((c) => c.cveId === 'CVE-2021-23017')?.confidence).toBe('fuzzy');
+  });
+
+  it('does not flag CVE-2023-6536 on pfSense 2.8.1 (FreeBSD 15 base)', () => {
+    const cpes = buildCpes({
+      brand: null,
+      model: null,
+      os: { name: 'FreeBSD (pfSense/OPNsense)', family: 'FreeBSD', accuracy: 70, source: 'inferred' },
+      services: [],
+      signals: { pfsenseVersion: '2.8.1-RELEASE' },
+    });
+    const found = resolver.match(cpes);
+    expect(found.find((c) => c.cveId === 'CVE-2023-6536')).toBeUndefined();
+  });
+
+  it('still fuzzy-matches CVE-2023-6536 when FreeBSD version is unknown', () => {
+    const found = resolver.match([{ part: 'o', vendor: 'freebsd', product: 'freebsd', version: null }]);
+    expect(found.find((c) => c.cveId === 'CVE-2023-6536')?.confidence).toBe('fuzzy');
   });
 });
 

@@ -23,6 +23,8 @@ export * from './domain/device-policy-repository.js';
 export * from './infrastructure/device-policy.repository.js';
 export * from './domain/cpe-access-session-store.js';
 export * from './infrastructure/cpe-access-session.store.js';
+export * from './infrastructure/prisma-cloud-device-identity.store.js';
+export * from './infrastructure/in-memory-cloud-device-identity.store.js';
 export * from './domain/site-repository.js';
 export * from './domain/site-matcher.js';
 export * from './infrastructure/site.repository.js';

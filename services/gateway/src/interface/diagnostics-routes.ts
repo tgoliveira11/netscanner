@@ -103,9 +103,11 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, c: Container): v
       c.config,
       creds.map((row) => ({
         ip: row.ip,
+        mac: row.mac,
         deviceType: row.deviceType,
         brand: row.brand,
         hostname: row.hostname,
+        isOnline: row.isOnline,
         routerScrapeUser: row.routerScrapeUser,
         routerScrapePassword: row.routerScrapePassword,
       })),

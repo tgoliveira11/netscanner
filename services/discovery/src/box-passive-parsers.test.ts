@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { parseTsharkDeepLine } from './infrastructure/tshark-deep-listener.js';
 import { parseLldpctlKeyvalue } from './infrastructure/lldpd-neighbor-source.js';
-import { parseNetdiscoverLine } from './infrastructure/netdiscover-passive-listener.js';
+import {
+  parseNetdiscoverLine,
+  parseTcpdumpArpLine,
+} from './infrastructure/netdiscover-passive-listener.js';
 
 describe('parseTsharkDeepLine', () => {
   it('extracts SNI and HTTP host', () => {
@@ -46,5 +49,21 @@ describe('parseNetdiscoverLine', () => {
 
   it('ignores headers', () => {
     expect(parseNetdiscoverLine('IP At MAC Address')).toBeNull();
+  });
+});
+
+describe('parseTcpdumpArpLine', () => {
+  it('parses ARP request teller from -e lines', () => {
+    const row = parseTcpdumpArpLine(
+      '05:18:52.898873 60:be:b4:23:9c:62 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 60: Request who-has 192.168.40.112 tell 192.168.40.1, length 46',
+    );
+    expect(row).toEqual({ ip: '192.168.40.1', mac: '60:be:b4:23:9c:62' });
+  });
+
+  it('parses ARP reply is-at', () => {
+    const row = parseTcpdumpArpLine(
+      '05:18:52.900000 aa:bb:cc:dd:ee:ff > 60:be:b4:23:9c:62, ethertype ARP (0x0806), length 60: Reply 192.168.40.2 is-at aa:bb:cc:dd:ee:ff, length 46',
+    );
+    expect(row).toEqual({ ip: '192.168.40.2', mac: 'aa:bb:cc:dd:ee:ff' });
   });
 });

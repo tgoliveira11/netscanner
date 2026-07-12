@@ -3,7 +3,7 @@ import type { AppConfig } from '@netscanner/config';
 import type { IEventPublisher } from '@netscanner/contracts';
 import type { Logger } from '@netscanner/logger';
 import { listScanCidrs } from '@netscanner/os-abstraction';
-import type { DhcpFingerprint, DiscoverHostsUseCase, IPassiveSignalStore } from '@netscanner/discovery';
+import type { DhcpFingerprint, DiscoverHostsUseCase, IPassiveSignalStore, ICloudDeviceIdentitySource } from '@netscanner/discovery';
 import type { FingerprintHostUseCase, ITrafficSource, TrafficMonitor } from '@netscanner/scanner';
 import type { CveFeedRefreshWorker } from '@netscanner/classification';
 import type { IDeviceRepository } from '@netscanner/inventory';
@@ -34,6 +34,7 @@ export interface BackgroundWorkerDeps {
   trafficMonitor?: TrafficMonitor;
   dnsActivityLog?: DnsActivityLog;
   cveRefresh?: CveFeedRefreshWorker;
+  tuyaIdentity?: ICloudDeviceIdentitySource;
   getSiteId: () => string;
   needsSiteConfirmation?: () => boolean;
   refreshSite?: () => Promise<void>;
@@ -51,6 +52,7 @@ export class BackgroundWorker {
   private enrichTimer: ReturnType<typeof setInterval> | null = null;
   private scanTimer: ReturnType<typeof setInterval> | null = null;
   private cveTimer: ReturnType<typeof setInterval> | null = null;
+  private tuyaTimer: ReturnType<typeof setInterval> | null = null;
   private enrichRunning = false;
   private scanRunning = false;
   private dhcpUnsub: (() => void) | null = null;
@@ -89,17 +91,26 @@ export class BackgroundWorker {
     // Daily CVE index refresh (no-op when CVE_NVD_SYNC=false).
     setTimeout(() => void this.refreshCveIndex(), 45_000);
     this.cveTimer = setInterval(() => void this.refreshCveIndex(), 24 * 60 * 60 * 1000);
+
+    if (this.deps.tuyaIdentity) {
+      const tuyaMs = config.TUYA_SYNC_INTERVAL_MS;
+      setTimeout(() => void this.refreshTuyaIdentity(), 30_000);
+      this.tuyaTimer = setInterval(() => void this.refreshTuyaIdentity(), tuyaMs);
+      logger.info({ tuyaMs }, 'Tuya identity sync scheduled');
+    }
   }
 
   stop(): void {
     if (this.enrichTimer) clearInterval(this.enrichTimer);
     if (this.scanTimer) clearInterval(this.scanTimer);
     if (this.cveTimer) clearInterval(this.cveTimer);
+    if (this.tuyaTimer) clearInterval(this.tuyaTimer);
     this.dhcpUnsub?.();
     this.passiveUnsub?.();
     this.enrichTimer = null;
     this.scanTimer = null;
     this.cveTimer = null;
+    this.tuyaTimer = null;
     this.dhcpUnsub = null;
     this.passiveUnsub = null;
   }
@@ -243,6 +254,9 @@ export class BackgroundWorker {
 
     this.scanRunning = true;
     const scanId = BACKGROUND_LIGHT_SCAN_ID;
+    const watchdogMs = 240_000;
+    const ac = new AbortController();
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
       const parsed: Cidr[] = [];
       for (const cidrRaw of cidrs) {
@@ -251,13 +265,21 @@ export class BackgroundWorker {
       }
       if (!parsed.length) return;
       this.deps.logger.info({ cidrs, count: parsed.length }, 'background light scan starting');
-      await this.deps.runScan.executeLight(scanId, parsed);
+      watchdog = setTimeout(() => {
+        this.deps.logger.error(
+          { scanId, watchdogMs },
+          'background light scan watchdog — aborting stuck scan',
+        );
+        ac.abort();
+      }, watchdogMs);
+      await this.deps.runScan.executeLight(scanId, parsed, ac.signal);
     } catch (error) {
       this.deps.logger.warn(
         { error: error instanceof Error ? error.message : error },
         'background light scan failed',
       );
     } finally {
+      if (watchdog) clearTimeout(watchdog);
       this.scanRunning = false;
     }
   }
@@ -305,6 +327,20 @@ export class BackgroundWorker {
       logger.warn(
         { error: error instanceof Error ? error.message : error },
         'CVE NVD subset refresh failed — keeping local index',
+      );
+    }
+  }
+
+  private async refreshTuyaIdentity(): Promise<void> {
+    const { tuyaIdentity, logger } = this.deps;
+    if (!tuyaIdentity) return;
+    try {
+      const count = await tuyaIdentity.refresh();
+      logger.debug({ count }, 'Tuya identity sync finished');
+    } catch (error) {
+      logger.warn(
+        { error: error instanceof Error ? error.message : error },
+        'Tuya identity sync failed',
       );
     }
   }
